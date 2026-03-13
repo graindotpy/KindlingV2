@@ -1,0 +1,490 @@
+.page {
+  min-height: 100vh;
+  padding: 28px;
+}
+
+.hero {
+  max-width: 1180px;
+  margin: 0 auto 18px;
+  padding: 24px 28px;
+  border-radius: 32px;
+  background:
+    linear-gradient(135deg, rgba(255, 248, 236, 0.95), rgba(255, 234, 205, 0.8)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: var(--shadow);
+}
+
+.heroBrand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.brandMark {
+  width: 64px;
+  height: 64px;
+}
+
+.eyebrow,
+.sectionLabel,
+.subtleText,
+.metaGrid dt,
+.systemNote {
+  color: var(--ink-soft);
+}
+
+.eyebrow,
+.sectionLabel {
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero h1,
+.sectionHeading h2,
+.cardBody h3,
+.emptyState h3 {
+  font-family: var(--font-display), "Segoe UI", sans-serif;
+}
+
+.hero h1 {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 1;
+}
+
+.heroText {
+  max-width: 42rem;
+  margin-top: 14px;
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: rgba(33, 53, 43, 0.82);
+}
+
+.topBarText {
+  margin-top: 10px;
+  max-width: 30rem;
+  line-height: 1.5;
+  color: rgba(33, 53, 43, 0.82);
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.topBar,
+.sectionCard,
+.card {
+  background: var(--paper);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: var(--shadow);
+}
+
+.topBar,
+.sectionCard {
+  border-radius: 28px;
+}
+
+.topBar {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px;
+  margin-bottom: 18px;
+}
+
+.userRow,
+.navTabs,
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.userRow {
+  margin-top: 10px;
+}
+
+.userChip,
+.navTab,
+.filterChip,
+.primaryButton,
+.secondaryButton,
+.ghostButton {
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.userChip,
+.filterChip,
+.navTab {
+  padding: 12px 18px;
+  font-weight: 800;
+}
+
+.userChip {
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--foreground);
+}
+
+.userChipActive,
+.primaryButton,
+.filterChipActive,
+.navTabActive {
+  background: var(--accent);
+  color: white;
+}
+
+.navTabs {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 8px;
+  border-radius: 999px;
+}
+
+.navTab {
+  color: var(--foreground);
+}
+
+.sectionCard {
+  padding: 24px;
+}
+
+.sectionHeading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.sectionHeading h2 {
+  margin-top: 6px;
+  font-size: clamp(1.5rem, 3vw, 2.2rem);
+}
+
+.filterRow {
+  margin-bottom: 16px;
+}
+
+.filterChip {
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--foreground);
+}
+
+.searchBar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.searchInput {
+  min-height: 60px;
+  padding: 0 20px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 1.05rem;
+}
+
+.searchInput:focus {
+  outline: 3px solid rgba(216, 109, 57, 0.18);
+  border-color: rgba(216, 109, 57, 0.4);
+}
+
+.primaryButton,
+.secondaryButton,
+.ghostButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  padding: 0 20px;
+  font-weight: 800;
+}
+
+.secondaryButton,
+.ghostButton {
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--foreground);
+  border: 1px solid var(--line);
+}
+
+.ghostButton {
+  margin-top: 12px;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.card {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 16px;
+  min-width: 0;
+  height: 100%;
+  padding: 16px;
+  border-radius: 24px;
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.cardTop {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.cardTop > div {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.cardBody h3 {
+  font-size: 1.2rem;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: none;
+}
+
+.cardMessage {
+  line-height: 1.5;
+  color: rgba(33, 53, 43, 0.85);
+  overflow-wrap: anywhere;
+}
+
+.metaGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.metaGrid dt {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.metaGrid dd {
+  line-height: 1.45;
+}
+
+.cover,
+.coverFallback {
+  width: 100%;
+  border-radius: 18px;
+}
+
+.coverLarge {
+  height: 150px;
+}
+
+.coverSmall {
+  height: 132px;
+}
+
+.cover {
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.coverFallback {
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(135deg, rgba(216, 109, 57, 0.18), rgba(47, 127, 121, 0.18)),
+    var(--paper-strong);
+  color: var(--accent);
+  font-family: var(--font-display), "Segoe UI", sans-serif;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.statusPill {
+  align-self: flex-start;
+  max-width: 100%;
+  white-space: normal;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.card .primaryButton,
+.card .secondaryButton {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.statusRequested {
+  background: rgba(216, 109, 57, 0.16);
+  color: #9a441d;
+}
+
+.statusSearching {
+  background: rgba(47, 127, 121, 0.16);
+  color: #1e6560;
+}
+
+.statusDownloading {
+  background: rgba(82, 132, 219, 0.16);
+  color: #285aa5;
+}
+
+.statusAvailable {
+  background: rgba(101, 165, 87, 0.16);
+  color: #2d6b28;
+}
+
+.statusFailed {
+  background: rgba(187, 89, 89, 0.14);
+  color: #9d3434;
+}
+
+.systemNote {
+  font-weight: 700;
+}
+
+.errorBanner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(187, 89, 89, 0.12);
+  color: #8d3232;
+  font-weight: 700;
+}
+
+.emptyState {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 28px;
+  text-align: center;
+}
+
+.emptyIcon {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(216, 109, 57, 0.18), rgba(47, 127, 121, 0.18));
+  color: var(--accent);
+  font-family: var(--font-display), "Segoe UI", sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.skeletonCard {
+  grid-template-columns: 104px 1fr;
+}
+
+.skeletonCover,
+.skeletonLine {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.5),
+    rgba(241, 228, 205, 0.95),
+    rgba(255, 255, 255, 0.5)
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 18px;
+}
+
+.skeletonCover {
+  height: 150px;
+}
+
+.skeletonLine {
+  height: 18px;
+}
+
+.skeletonLineShort {
+  width: 62%;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (max-width: 860px) {
+  .page {
+    padding: 16px;
+  }
+
+  .topBar,
+  .sectionHeading,
+  .searchBar,
+  .card {
+    grid-template-columns: 1fr;
+  }
+
+  .topBar,
+  .sectionHeading,
+  .cardTop {
+    display: grid;
+  }
+
+  .card {
+    gap: 14px;
+  }
+
+  .coverLarge,
+  .coverSmall {
+    height: 180px;
+  }
+}
+
+@media (max-width: 640px) {
+  .hero,
+  .topBar,
+  .sectionCard {
+    padding: 18px;
+    border-radius: 24px;
+  }
+
+  .navTabs {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .navTab {
+    flex: 1;
+    text-align: center;
+  }
+
+  .searchBar {
+    grid-template-columns: 1fr;
+  }
+}
