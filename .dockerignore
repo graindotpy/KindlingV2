@@ -1,0 +1,8 @@
+node_modules
+.next
+data
+watched-books
+.git
+.gitignore
+npm-debug.log*
+.DS_Store

@@ -71,6 +71,46 @@ npm run worker
 
 11. Open [http://localhost:3000](http://localhost:3000).
 
+
+## Docker Compose (ZimaOS-friendly)
+
+Kindling can run in Docker Compose with two containers:
+
+- `kindling-web` for the Next.js UI/API
+- `kindling-worker` for watched-folder scanning and automatic Kindle delivery
+
+This repository includes `Dockerfile`, `.dockerignore`, and `docker-compose.yml`.
+
+### 1) Configure environment variables in ZimaOS
+
+ZimaOS can inject environment variables from the UI, so you do **not** need an `env_file` in compose.
+
+Set all required values in the UI for both services, especially:
+
+- `KINDLING_ADMIN_PASSWORD`
+- `KINDLING_SESSION_SECRET`
+- `READARR_BASE_URL`, `READARR_API_KEY`
+- `AUDIOBOOK_READARR_BASE_URL`, `AUDIOBOOK_READARR_API_KEY` (if used)
+- SMTP variables (if using Kindle email delivery)
+
+The compose file keeps only non-secret defaults:
+
+- `DATABASE_PATH=/app/data/kindling.db`
+- `KINDLING_EMBEDDED_WORKER=false`
+
+### 2) Start the stack
+
+```bash
+docker compose up -d --build
+```
+
+Then open `http://<your-server-ip>:3000`.
+
+### 3) Persistence
+
+- `./data:/app/data` persists SQLite data.
+- `./watched-books:/watched-books` should point at your real watch folder path.
+
 ## Profiles
 
 Kindling seeds a tiny local family list for v1:
