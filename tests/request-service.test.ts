@@ -291,6 +291,84 @@ describe("createRequestService.createRequest", () => {
     expect(created?.readarrBookId).toBe(101);
     expect(created?.readarrAuthorId).toBe(51);
   });
+
+  it("retries automatic search when Readarr does not show it right away", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { service, ebookReadarr } = makeDeps();
+      const idleStatus = {
+        book: {
+          ...makeSelection(),
+          id: 101,
+          monitored: true,
+          author: {
+            ...makeSelection().author,
+            id: 51,
+          },
+          lastSearchTime: null,
+          statistics: { bookFileCount: 0 },
+        },
+        queueItems: [],
+      };
+      const searchingStatus = {
+        book: {
+          ...idleStatus.book,
+          lastSearchTime: FIXED_TIME,
+        },
+        queueItems: [],
+      };
+
+      ebookReadarr.getBookStatus
+        .mockResolvedValueOnce(idleStatus)
+        .mockResolvedValueOnce(idleStatus)
+        .mockResolvedValueOnce(searchingStatus);
+
+      const pending = service.createRequest(1, "ebook", makeSelection());
+      await vi.runAllTimersAsync();
+      const created = await pending;
+
+      expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(2);
+      expect(created?.status).toBe("searching");
+      expect(created?.statusMessage).toContain("searching");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the request as requested when automatic search cannot be confirmed yet", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { service, ebookReadarr } = makeDeps();
+      const idleStatus = {
+        book: {
+          ...makeSelection(),
+          id: 101,
+          monitored: true,
+          author: {
+            ...makeSelection().author,
+            id: 51,
+          },
+          lastSearchTime: null,
+          statistics: { bookFileCount: 0 },
+        },
+        queueItems: [],
+      };
+
+      ebookReadarr.getBookStatus.mockResolvedValue(idleStatus);
+
+      const pending = service.createRequest(1, "ebook", makeSelection());
+      await vi.runAllTimersAsync();
+      const created = await pending;
+
+      expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(4);
+      expect(created?.status).toBe("requested");
+      expect(created?.statusMessage).toContain("could not be confirmed yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("createRequestService.deleteRequest", () => {

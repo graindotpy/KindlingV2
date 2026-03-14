@@ -31,10 +31,17 @@ import type {
 } from "@/lib/requests/types";
 
 const REQUEST_FORMATS: BookRequestFormat[] = ["ebook", "audiobook"];
+const POST_ADD_SEARCH_RETRY_DELAYS_MS = [500, 1_500, 3_000];
 
 type RequestsRepository = ReturnType<typeof createBookRequestsRepository>;
 type UsersRepository = ReturnType<typeof createUsersRepository>;
 type ReadarrServices = Record<BookRequestFormat, ReadarrService>;
+type ReadarrBookStatus = Awaited<ReturnType<ReadarrService["getBookStatus"]>>;
+type SearchKickoffResult = {
+  confirmed: boolean;
+  liveStatus: ReadarrBookStatus | null;
+  triggerAccepted: boolean;
+};
 
 type RequestServiceDependencies = {
   requestsRepo: RequestsRepository;
@@ -312,6 +319,81 @@ function buildDeleteRequestStatusMessage(options: {
   }
 
   return "This request was reset to Not Monitored.";
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hasActiveQueueItem(status: ReadarrBookStatus) {
+  return status.queueItems.some((item) => item.bookId === status.book.id);
+}
+
+function hasConfirmedSearchActivity(status: ReadarrBookStatus) {
+  return (
+    (status.book.statistics?.bookFileCount ?? 0) > 0 ||
+    hasActiveQueueItem(status) ||
+    Boolean(status.book.lastSearchTime)
+  );
+}
+
+async function startAutomaticSearchWithRetries(
+  readarr: ReadarrService,
+  bookId: number,
+): Promise<SearchKickoffResult> {
+  let liveStatus: ReadarrBookStatus | null = null;
+
+  try {
+    liveStatus = await readarr.getBookStatus(bookId);
+    if ((liveStatus.book.statistics?.bookFileCount ?? 0) > 0 || hasActiveQueueItem(liveStatus)) {
+      return {
+        confirmed: true,
+        liveStatus,
+        triggerAccepted: false,
+      };
+    }
+  } catch {
+    // Ignore status reads here and fall back to best-effort search retries below.
+  }
+
+  let triggerAccepted = false;
+  let lastTriggerError: unknown = null;
+
+  for (const delayMs of [0, ...POST_ADD_SEARCH_RETRY_DELAYS_MS]) {
+    if (delayMs > 0) {
+      await wait(delayMs);
+    }
+
+    try {
+      await readarr.triggerBookSearch(bookId);
+      triggerAccepted = true;
+    } catch (error) {
+      lastTriggerError = error;
+    }
+
+    try {
+      liveStatus = await readarr.getBookStatus(bookId);
+      if (hasConfirmedSearchActivity(liveStatus)) {
+        return {
+          confirmed: true,
+          liveStatus,
+          triggerAccepted,
+        };
+      }
+    } catch {
+      // Ignore transient status fetch issues and continue retrying the search command.
+    }
+  }
+
+  if (!triggerAccepted && lastTriggerError) {
+    throw lastTriggerError;
+  }
+
+  return {
+    confirmed: false,
+    liveStatus,
+    triggerAccepted,
+  };
 }
 
 function buildRequestLookup(records: BookRequestRecord[]) {
@@ -790,6 +872,7 @@ export function createRequestService(
           // and continue with the best-effort search/status steps below.
         }
 
+        let searchKickoff: SearchKickoffResult | null = null;
         let fallbackStatus: {
           status: "requested" | "searching";
           message: string;
@@ -802,14 +885,30 @@ export function createRequestService(
         };
 
         try {
-          await readarr.triggerBookSearch(book.id);
-          fallbackStatus = {
-            status: "searching",
-            message:
-              requestFormat === "audiobook"
-                ? "The audiobook Readarr is searching for this title now."
-                : "Readarr is searching for this book now.",
-          };
+          searchKickoff = await startAutomaticSearchWithRetries(readarr, book.id);
+          fallbackStatus = searchKickoff.confirmed
+            ? {
+                status: "searching",
+                message:
+                  requestFormat === "audiobook"
+                    ? "The audiobook Readarr is searching for this title now."
+                    : "Readarr is searching for this book now.",
+              }
+            : searchKickoff.triggerAccepted
+              ? {
+                  status: "requested",
+                  message:
+                    requestFormat === "audiobook"
+                      ? "Saved to the audiobook Readarr, but automatic searching could not be confirmed yet."
+                      : "Saved to Readarr, but automatic searching could not be confirmed yet.",
+                }
+              : {
+                  status: "requested",
+                  message:
+                    requestFormat === "audiobook"
+                      ? "Saved to the audiobook Readarr, but automatic searching could not be started."
+                      : "Saved to Readarr, but automatic searching could not be started.",
+                };
         } catch {
           fallbackStatus = {
             status: "requested",
@@ -821,7 +920,8 @@ export function createRequestService(
         }
 
         try {
-          const { book: liveBook, queueItems } = await readarr.getBookStatus(book.id);
+          const { book: liveBook, queueItems } =
+            searchKickoff?.liveStatus ?? (await readarr.getBookStatus(book.id));
           const mapped = mapReadarrBookToFriendlyStatus(
             liveBook,
             queueItems,
@@ -829,7 +929,10 @@ export function createRequestService(
           );
           const status = mapped.status === "not-monitored" ? fallbackStatus.status : mapped.status;
           const statusMessage =
-            mapped.status === "not-monitored" ? fallbackStatus.message : mapped.message;
+            mapped.status === "not-monitored" ||
+            (mapped.status === "requested" && fallbackStatus.status === "requested")
+              ? fallbackStatus.message
+              : mapped.message;
 
           return deps.requestsRepo.update(created.id, {
             status,
