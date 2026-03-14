@@ -197,7 +197,7 @@ describe("createReadarrService.addBookForRequest", () => {
 
       if (url.includes("/api/v1/book?authorId=51")) {
         authorBooksLookups += 1;
-        return jsonResponse(authorBooksLookups >= 3 ? [createdBook] : []);
+        return jsonResponse(authorBooksLookups >= 5 ? [createdBook] : []);
       }
 
       if (url.endsWith("/api/v1/book") && init?.method === "POST") {
@@ -217,7 +217,7 @@ describe("createReadarrService.addBookForRequest", () => {
     const result = await pending;
 
     expect(result.id).toBe(1466917);
-    expect(authorBooksLookups).toBe(3);
+    expect(authorBooksLookups).toBe(5);
     vi.useRealTimers();
   });
 

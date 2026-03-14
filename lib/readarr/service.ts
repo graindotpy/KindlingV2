@@ -31,7 +31,8 @@ type ReadarrLookupSearchBook = Omit<ReadarrLookupBook, "author"> & {
 };
 
 const cachedDefaultsByFormat: Partial<Record<BookRequestFormat, ReadarrDefaults>> = {};
-const POST_ADD_LOOKUP_RETRY_DELAYS_MS = [250, 500, 1_000];
+// Readarr can finish an async author refresh several seconds after a failed add-book response.
+const POST_ADD_LOOKUP_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000, 8_000];
 
 export class ReadarrApiError extends Error {
   status: number;
