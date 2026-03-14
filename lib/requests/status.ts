@@ -1,20 +1,34 @@
 import type { ReadarrLookupBook, ReadarrQueueItem } from "@/lib/readarr/types";
-import type { BookRequestFilter, BookRequestStatus } from "@/lib/requests/types";
+import type {
+  BookRequestFilter,
+  BookRequestFormat,
+  BookRequestStatus,
+} from "@/lib/requests/types";
 
 export const BOOK_REQUEST_STATUS_LABELS: Record<BookRequestStatus, string> = {
   requested: "Requested",
   searching: "Searching",
   downloading: "Downloading",
   available: "Ready",
+  "not-monitored": "Not Monitored",
   failed: "Failed",
+};
+
+export const BOOK_REQUEST_FORMAT_LABELS: Record<BookRequestFormat, string> = {
+  ebook: "EPUB",
+  audiobook: "Audiobook",
 };
 
 export function isActiveStatus(status: BookRequestStatus) {
   return status === "requested" || status === "searching" || status === "downloading";
 }
 
+export function supportsKindleDelivery(format: BookRequestFormat) {
+  return format === "ebook";
+}
+
 export function blocksNewRequest(status: BookRequestStatus) {
-  return status !== "failed";
+  return status !== "failed" && status !== "not-monitored";
 }
 
 export function matchesRequestFilter(status: BookRequestStatus, filter: BookRequestFilter) {
@@ -38,6 +52,13 @@ export function mapReadarrBookToFriendlyStatus(
     return {
       status: "available" as const,
       message: "Your book is ready.",
+    };
+  }
+
+  if (book.monitored === false) {
+    return {
+      status: "not-monitored" as const,
+      message: "This request is not monitored in Readarr right now.",
     };
   }
 

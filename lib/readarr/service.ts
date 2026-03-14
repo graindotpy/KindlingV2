@@ -1,6 +1,8 @@
-import { getAppConfig, isReadarrConfigured } from "@/lib/config";
+import { getReadarrConfig, isReadarrConfigured } from "@/lib/config";
+import type { BookRequestFormat } from "@/lib/requests/types";
 import type {
   ReadarrAuthor,
+  ReadarrBookFile,
   ReadarrLookupBook,
   ReadarrMetadataProfile,
   ReadarrQualityProfile,
@@ -28,7 +30,7 @@ type ReadarrLookupSearchBook = Omit<ReadarrLookupBook, "author"> & {
   authorTitle?: string | null;
 };
 
-let cachedDefaults: ReadarrDefaults | null = null;
+const cachedDefaultsByFormat: Partial<Record<BookRequestFormat, ReadarrDefaults>> = {};
 
 export class ReadarrApiError extends Error {
   status: number;
@@ -82,15 +84,22 @@ async function parseResponseBody(response: Response) {
   }
 }
 
-function buildUrl(pathname: string, query?: Record<string, QueryValue>) {
-  const config = getAppConfig();
-  const baseUrl = config.readarr.baseUrl;
+function getReadarrConfigErrorMessage(format: BookRequestFormat) {
+  return format === "audiobook"
+    ? "Audiobook Readarr is not configured yet. Add AUDIOBOOK_READARR_BASE_URL and AUDIOBOOK_READARR_API_KEY."
+    : "Readarr is not configured yet. Add READARR_BASE_URL and READARR_API_KEY.";
+}
+
+function buildUrl(
+  format: BookRequestFormat,
+  pathname: string,
+  query?: Record<string, QueryValue>,
+) {
+  const config = getReadarrConfig(format);
+  const baseUrl = config.baseUrl;
 
   if (!baseUrl) {
-    throw new ReadarrApiError(
-      "Readarr is not configured yet. Add READARR_BASE_URL and READARR_API_KEY.",
-      503,
-    );
+    throw new ReadarrApiError(getReadarrConfigErrorMessage(format), 503);
   }
 
   const url = new URL(pathname, `${baseUrl}/`);
@@ -116,21 +125,19 @@ function buildUrl(pathname: string, query?: Record<string, QueryValue>) {
 }
 
 async function readarrFetch<T>(
+  format: BookRequestFormat,
   pathname: string,
   init?: RequestInit,
   query?: Record<string, QueryValue>,
 ): Promise<T> {
-  const config = getAppConfig();
-  const apiKey = config.readarr.apiKey;
+  const config = getReadarrConfig(format);
+  const apiKey = config.apiKey;
 
   if (!apiKey) {
-    throw new ReadarrApiError(
-      "Readarr is not configured yet. Add READARR_BASE_URL and READARR_API_KEY.",
-      503,
-    );
+    throw new ReadarrApiError(getReadarrConfigErrorMessage(format), 503);
   }
 
-  const response = await fetch(buildUrl(pathname, query), {
+  const response = await fetch(buildUrl(format, pathname, query), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -234,25 +241,26 @@ export function pickPreferredEditionId(book: ReadarrLookupBook) {
   return monitoredEdition?.id ?? book.editions?.[0]?.id ?? null;
 }
 
-export function createReadarrService() {
+export function createReadarrService(format: BookRequestFormat = "ebook") {
   async function getRootFolders() {
-    return readarrFetch<ReadarrRootFolder[]>("/api/v1/rootfolder");
+    return readarrFetch<ReadarrRootFolder[]>(format, "/api/v1/rootfolder");
   }
 
   async function getQualityProfiles() {
-    return readarrFetch<ReadarrQualityProfile[]>("/api/v1/qualityprofile");
+    return readarrFetch<ReadarrQualityProfile[]>(format, "/api/v1/qualityprofile");
   }
 
   async function getMetadataProfiles() {
-    return readarrFetch<ReadarrMetadataProfile[]>("/api/v1/metadataprofile");
+    return readarrFetch<ReadarrMetadataProfile[]>(format, "/api/v1/metadataprofile");
   }
 
   async function resolveDefaults(): Promise<ReadarrDefaults> {
+    const cachedDefaults = cachedDefaultsByFormat[format];
     if (cachedDefaults) {
       return cachedDefaults;
     }
 
-    const config = getAppConfig();
+    const config = getReadarrConfig(format);
 
     const [rootFolders, qualityProfiles, metadataProfiles] = await Promise.all([
       getRootFolders(),
@@ -260,13 +268,13 @@ export function createReadarrService() {
       getMetadataProfiles(),
     ]);
 
-    const rootFolderPath = config.readarr.rootFolderPath ?? rootFolders[0]?.path;
+    const rootFolderPath = config.rootFolderPath ?? rootFolders[0]?.path;
     const qualityProfileId =
-      config.readarr.qualityProfileId ??
+      config.qualityProfileId ??
       rootFolders[0]?.defaultQualityProfileId ??
       qualityProfiles[0]?.id;
     const metadataProfileId =
-      config.readarr.metadataProfileId ??
+      config.metadataProfileId ??
       rootFolders[0]?.defaultMetadataProfileId ??
       metadataProfiles[0]?.id;
 
@@ -277,23 +285,28 @@ export function createReadarrService() {
       );
     }
 
-    cachedDefaults = {
+    cachedDefaultsByFormat[format] = {
       rootFolderPath,
       qualityProfileId,
       metadataProfileId,
     };
 
-    return cachedDefaults;
+    return cachedDefaultsByFormat[format] as ReadarrDefaults;
   }
 
   async function getBooksByAuthor(authorId: number) {
-    return readarrFetch<ReadarrLookupBook[]>("/api/v1/book", undefined, { authorId });
+    return readarrFetch<ReadarrLookupBook[]>(format, "/api/v1/book", undefined, { authorId });
   }
 
   async function lookupAuthorByName(authorName: string) {
-    const authors = await readarrFetch<ReadarrAuthor[]>("/api/v1/author/lookup", undefined, {
-      term: authorName,
-    });
+    const authors = await readarrFetch<ReadarrAuthor[]>(
+      format,
+      "/api/v1/author/lookup",
+      undefined,
+      {
+        term: authorName,
+      },
+    );
 
     return selectMatchingAuthor(authors, authorName);
   }
@@ -313,7 +326,13 @@ export function createReadarrService() {
     }
 
     const authorEntries = await Promise.all(
-      authorNames.map(async (authorName) => [authorName, await lookupAuthorByName(authorName)] as const),
+      authorNames.map(async (authorName) => {
+        try {
+          return [authorName, await lookupAuthorByName(authorName)] as const;
+        } catch {
+          return [authorName, null] as const;
+        }
+      }),
     );
     const authorsByName = new Map(authorEntries);
 
@@ -356,27 +375,38 @@ export function createReadarrService() {
   }
 
   const service = {
+    format,
+
     isConfigured() {
-      return isReadarrConfigured();
+      return isReadarrConfigured(format);
     },
 
     async checkConnection() {
-      if (!isReadarrConfigured()) {
+      if (!isReadarrConfigured(format)) {
         return {
           configured: false,
           reachable: false,
           version: null,
-          message: "Set READARR_BASE_URL and READARR_API_KEY to enable live search.",
+          message:
+            format === "audiobook"
+              ? "Set AUDIOBOOK_READARR_BASE_URL and AUDIOBOOK_READARR_API_KEY to enable audiobook requests."
+              : "Set READARR_BASE_URL and READARR_API_KEY to enable live search.",
         };
       }
 
       try {
-        const status = await readarrFetch<ReadarrSystemStatus>("/api/v1/system/status");
+        const status = await readarrFetch<ReadarrSystemStatus>(
+          format,
+          "/api/v1/system/status",
+        );
         return {
           configured: true,
           reachable: true,
           version: status.version ?? null,
-          message: "Connected to Readarr.",
+          message:
+            format === "audiobook"
+              ? "Connected to the audiobook Readarr."
+              : "Connected to Readarr.",
         };
       } catch (error) {
         return {
@@ -392,15 +422,20 @@ export function createReadarrService() {
     },
 
     async searchBooks(query: string) {
-      const books = await readarrFetch<ReadarrLookupSearchBook[]>("/api/v1/book/lookup", undefined, {
-        term: query,
-      });
+      const books = await readarrFetch<ReadarrLookupSearchBook[]>(
+        format,
+        "/api/v1/book/lookup",
+        undefined,
+        {
+          term: query,
+        },
+      );
 
       return enrichLookupBooks(books);
     },
 
     getBook(bookId: number) {
-      return readarrFetch<ReadarrLookupBook>(`/api/v1/book/${bookId}`);
+      return readarrFetch<ReadarrLookupBook>(format, `/api/v1/book/${bookId}`);
     },
 
     getBooksByAuthor,
@@ -410,9 +445,19 @@ export function createReadarrService() {
         return Promise.resolve([] as ReadarrQueueItem[]);
       }
 
-      return readarrFetch<ReadarrQueueItem[]>("/api/v1/queue/details", undefined, {
+      return readarrFetch<ReadarrQueueItem[]>(format, "/api/v1/queue/details", undefined, {
         bookIds,
         includeBook: true,
+      });
+    },
+
+    getBookFiles(bookId: number) {
+      return readarrFetch<ReadarrBookFile[]>(format, "/api/v1/bookfile", undefined, { bookId });
+    },
+
+    deleteBookFile(bookFileId: number) {
+      return readarrFetch<null>(format, `/api/v1/bookfile/${bookFileId}`, {
+        method: "DELETE",
       });
     },
 
@@ -444,7 +489,7 @@ export function createReadarrService() {
       };
 
       try {
-        return await readarrFetch<ReadarrAuthor>("/api/v1/author", {
+        return await readarrFetch<ReadarrAuthor>(format, "/api/v1/author", {
           method: "POST",
           body: JSON.stringify(payload),
         });
@@ -496,7 +541,7 @@ export function createReadarrService() {
       };
 
       try {
-        return await readarrFetch<ReadarrLookupBook>("/api/v1/book", {
+        return await readarrFetch<ReadarrLookupBook>(format, "/api/v1/book", {
           method: "POST",
           body: JSON.stringify(payload),
         });
@@ -511,7 +556,7 @@ export function createReadarrService() {
     },
 
     monitorRequestedBook(bookId: number) {
-      return readarrFetch<ReadarrLookupBook[]>("/api/v1/book/monitor", {
+      return readarrFetch<ReadarrLookupBook[]>(format, "/api/v1/book/monitor", {
         method: "PUT",
         body: JSON.stringify({
           bookIds: [bookId],
@@ -520,14 +565,28 @@ export function createReadarrService() {
       });
     },
 
-    triggerBookSearch(bookId: number) {
-      return readarrFetch<{ id: number; status?: string | null }>("/api/v1/command", {
-        method: "POST",
+    unmonitorRequestedBook(bookId: number) {
+      return readarrFetch<ReadarrLookupBook[]>(format, "/api/v1/book/monitor", {
+        method: "PUT",
         body: JSON.stringify({
-          name: "BookSearch",
           bookIds: [bookId],
+          monitored: false,
         }),
       });
+    },
+
+    triggerBookSearch(bookId: number) {
+      return readarrFetch<{ id: number; status?: string | null }>(
+        format,
+        "/api/v1/command",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: "BookSearch",
+            bookIds: [bookId],
+          }),
+        },
+      );
     },
 
     async getBookStatus(bookId: number) {

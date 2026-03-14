@@ -1,16 +1,31 @@
+html {
+  color-scheme: dark;
+}
+
 :root {
-  --background: #f7efe2;
-  --foreground: #21352b;
-  --paper: rgba(255, 252, 247, 0.88);
-  --paper-strong: #fffaf3;
-  --line: rgba(33, 53, 43, 0.12);
-  --line-strong: rgba(33, 53, 43, 0.2);
-  --accent: #d86d39;
-  --accent-soft: #f3c494;
-  --teal: #2f7f79;
-  --teal-soft: #d6efe9;
-  --ink-soft: #55685e;
-  --shadow: 0 20px 60px rgba(103, 68, 41, 0.14);
+  --background: #120c09;
+  --foreground: #f7efe6;
+  --foreground-muted: rgba(247, 239, 230, 0.78);
+  --paper: rgba(25, 17, 14, 0.84);
+  --paper-strong: #211613;
+  --paper-soft: rgba(42, 28, 23, 0.8);
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-strong: rgba(255, 255, 255, 0.1);
+  --line: rgba(247, 239, 230, 0.12);
+  --line-strong: rgba(247, 239, 230, 0.22);
+  --accent: #f39a57;
+  --accent-soft: rgba(243, 154, 87, 0.2);
+  --teal: #6fcab4;
+  --teal-soft: rgba(93, 196, 176, 0.16);
+  --ink-soft: #c3aea0;
+  --danger: #ff9f8e;
+  --danger-soft: rgba(255, 159, 142, 0.14);
+  --success: #abd87d;
+  --success-soft: rgba(171, 216, 125, 0.16);
+  --ember-glow: rgba(243, 154, 87, 0.18);
+  --ember-glow-strong: rgba(243, 154, 87, 0.3);
+  --ember-shadow: rgba(86, 33, 10, 0.34);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
 }
 
 html,
@@ -22,9 +37,11 @@ body {
 body {
   color: var(--foreground);
   background:
-    radial-gradient(circle at top left, rgba(255, 241, 212, 0.95), transparent 34%),
-    radial-gradient(circle at top right, rgba(204, 237, 228, 0.8), transparent 26%),
-    linear-gradient(180deg, #fbf5eb 0%, #f5ecde 100%);
+    radial-gradient(circle at 18% 0%, var(--ember-glow-strong), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(170, 79, 30, 0.18), transparent 24%),
+    radial-gradient(circle at 50% 120%, rgba(255, 140, 61, 0.08), transparent 34%),
+    linear-gradient(180deg, #261712 0%, #120c09 52%, #0b0706 100%);
+  background-color: var(--background);
   font-family: var(--font-body), "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -55,13 +72,14 @@ img {
 }
 
 ::selection {
-  background: rgba(216, 109, 57, 0.24);
+  background: rgba(241, 138, 81, 0.3);
 }
 
 @media (max-width: 640px) {
   body {
     background:
-      radial-gradient(circle at top left, rgba(255, 241, 212, 0.95), transparent 48%),
-      linear-gradient(180deg, #fbf5eb 0%, #f5ecde 100%);
+      radial-gradient(circle at 20% 0%, var(--ember-glow-strong), transparent 38%),
+      radial-gradient(circle at 80% 10%, rgba(170, 79, 30, 0.14), transparent 28%),
+      linear-gradient(180deg, #261712 0%, #120c09 58%, #0b0706 100%);
   }
 }

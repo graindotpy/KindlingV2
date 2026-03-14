@@ -88,6 +88,19 @@ export type ReadarrQueueItem = {
   estimatedCompletionTime?: string | null;
 };
 
+export type ReadarrBookFile = {
+  id: number;
+  bookId?: number | null;
+  path?: string | null;
+  relativePath?: string | null;
+  size?: number | null;
+  quality?: {
+    quality?: {
+      name?: string | null;
+    } | null;
+  } | null;
+};
+
 export type ReadarrQualityProfile = {
   id: number;
   name: string;

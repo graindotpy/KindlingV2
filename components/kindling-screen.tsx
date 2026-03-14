@@ -4,9 +4,17 @@
 import Link from "next/link";
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import styles from "@/components/kindling-screen.module.css";
-import { BOOK_REQUEST_STATUS_LABELS, matchesRequestFilter } from "@/lib/requests/status";
+import type { DeliverySettings, SendToKindleResult } from "@/lib/delivery/types";
+import { createLatestRequestGate } from "@/lib/search/latest-request";
+import {
+  BOOK_REQUEST_FORMAT_LABELS,
+  BOOK_REQUEST_STATUS_LABELS,
+  matchesRequestFilter,
+  supportsKindleDelivery,
+} from "@/lib/requests/status";
 import type {
   BookRequestFilter,
+  BookRequestFormat,
   BookRequestRecord,
   LocalUser,
   SearchResultItem,
@@ -14,6 +22,7 @@ import type {
 
 type KindlingScreenProps = {
   screen: "books" | "request" | "requested";
+  isMobileCompatibilityMode?: boolean;
 };
 
 const FILTERS: Array<{ key: BookRequestFilter; label: string }> = [
@@ -21,6 +30,8 @@ const FILTERS: Array<{ key: BookRequestFilter; label: string }> = [
   { key: "active", label: "Active" },
   { key: "available", label: "Available" },
 ];
+
+const REQUEST_FORMATS: BookRequestFormat[] = ["ebook", "audiobook"];
 
 async function fetchJson<T>(input: string, init?: RequestInit) {
   const response = await fetch(input, {
@@ -36,6 +47,14 @@ async function fetchJson<T>(input: string, init?: RequestInit) {
     | { message?: string }
     | T
     | null;
+
+  if (response.status === 401 && typeof window !== "undefined") {
+    const next = encodeURIComponent(
+      `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    );
+    window.location.assign(`/unlock?next=${next}`);
+    throw new Error("Redirecting to unlock Kindling.");
+  }
 
   if (!response.ok) {
     throw new Error(
@@ -57,12 +76,53 @@ function formatRequestedDate(value: string) {
   }).format(date);
 }
 
+function getFilenameFromPath(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  return value.split(/[/\\]/).pop() ?? value;
+}
+
+function buildProfileDraft(user: LocalUser) {
+  return {
+    name: user.name,
+    kindleEmail: user.kindleEmail ?? "",
+  };
+}
+
+function sortUsersByName(entries: LocalUser[]) {
+  return [...entries].sort((left, right) =>
+    left.name.localeCompare(right.name, undefined, {
+      sensitivity: "base",
+    }),
+  );
+}
+
+function formatSavedRequestCount(count: number) {
+  return `${count} saved request${count === 1 ? "" : "s"}`;
+}
+
+function getProfileDeleteDisabledReason(user: LocalUser, totalProfiles: number) {
+  if (user.requestCount > 0) {
+    return `Delete is disabled while ${formatSavedRequestCount(user.requestCount)} ${user.requestCount === 1 ? "is" : "are"} attached to this profile.`;
+  }
+
+  if (totalProfiles <= 1) {
+    return "Add another household profile before deleting this one.";
+  }
+
+  return null;
+}
+
 function statusTone(status: BookRequestRecord["status"]) {
   switch (status) {
     case "available":
       return styles.statusAvailable;
     case "downloading":
       return styles.statusDownloading;
+    case "not-monitored":
+      return styles.statusNotMonitored;
     case "searching":
       return styles.statusSearching;
     case "failed":
@@ -123,9 +183,29 @@ function Cover(props: { title: string; imageUrl: string | null; size?: "large" |
 function RequestCard(props: {
   request: BookRequestRecord;
   syncing: boolean;
+  clearing: boolean;
   onSync: (requestId: number) => void;
+  onClear: (requestId: number) => void;
   showRequester?: boolean;
+  showDeliveryControls?: boolean;
+  smtpConfigured?: boolean;
+  smtpMessage?: string | null;
+  deliveryUsers?: LocalUser[];
+  selectedRecipientId?: number;
+  sending?: boolean;
+  onRecipientChange?: (requestId: number, userId: number) => void;
+  onSendToKindle?: (requestId: number) => void;
 }) {
+  const availableFile = getFilenameFromPath(props.request.matchedFilePath);
+  const selectedRecipient =
+    props.deliveryUsers?.find((user) => user.id === props.selectedRecipientId) ?? null;
+  const canDeliver = supportsKindleDelivery(props.request.requestFormat);
+  const canSend =
+    Boolean(props.request.matchedFilePath) &&
+    canDeliver &&
+    Boolean(props.smtpConfigured) &&
+    Boolean(selectedRecipient?.kindleEmail);
+
   return (
     <article className={styles.card}>
       <Cover title={props.request.requestedTitle} imageUrl={props.request.coverUrl} />
@@ -133,7 +213,10 @@ function RequestCard(props: {
         <div className={styles.cardTop}>
           <div>
             <h3>{props.request.requestedTitle}</h3>
-            <p className={styles.subtleText}>{props.request.requestedAuthor}</p>
+            <p className={styles.subtleText}>
+              {props.request.requestedAuthor}
+              {` - ${BOOK_REQUEST_FORMAT_LABELS[props.request.requestFormat]}`}
+            </p>
           </div>
           <span className={`${styles.statusPill} ${statusTone(props.request.status)}`}>
             {BOOK_REQUEST_STATUS_LABELS[props.request.status]}
@@ -154,15 +237,82 @@ function RequestCard(props: {
             <dt>Latest update</dt>
             <dd>{props.request.statusMessage ?? "Saved in Kindling."}</dd>
           </div>
+          {availableFile ? (
+            <div>
+              <dt>Matched file</dt>
+              <dd>{availableFile}</dd>
+            </div>
+          ) : null}
+          {props.request.lastDeliveryMessage ? (
+            <div>
+              <dt>Last delivery</dt>
+              <dd>{props.request.lastDeliveryMessage}</dd>
+            </div>
+          ) : null}
         </dl>
-        <button
-          type="button"
-          className={styles.secondaryButton}
-          onClick={() => props.onSync(props.request.id)}
-          disabled={props.syncing}
-        >
-          {props.syncing ? "Refreshing..." : "Refresh status"}
-        </button>
+
+        {props.showDeliveryControls && canDeliver ? (
+          <div className={styles.deliveryPanel}>
+            <div className={styles.inlineFieldGroup}>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Send to Kindle</span>
+                <select
+                  className={styles.selectInput}
+                  value={props.selectedRecipientId ?? ""}
+                  onChange={(event) =>
+                    props.onRecipientChange?.(
+                      props.request.id,
+                      Number(event.target.value),
+                    )
+                  }
+                >
+                  {props.deliveryUsers?.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.name}
+                      {user.kindleEmail ? ` - ${user.kindleEmail}` : " - no Kindle email"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className={styles.primaryButton}
+                onClick={() => props.onSendToKindle?.(props.request.id)}
+                disabled={props.sending || !canSend}
+              >
+                {props.sending ? "Sending..." : "Send to Kindle"}
+              </button>
+            </div>
+            <p className={styles.systemNote}>
+              {!props.request.matchedFilePath
+                ? "Waiting for this book file to appear in the watched folder."
+                : !props.smtpConfigured
+                  ? props.smtpMessage ?? "SMTP is not ready for Kindle delivery yet."
+                  : !selectedRecipient?.kindleEmail
+                    ? "Add a Kindle email to this profile before sending."
+                    : `Ready to send ${availableFile}.`}
+            </p>
+          </div>
+        ) : null}
+
+        <div className={styles.actionRow}>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => props.onSync(props.request.id)}
+            disabled={props.syncing || props.clearing}
+          >
+            {props.syncing ? "Refreshing..." : "Refresh status"}
+          </button>
+          <button
+            type="button"
+            className={styles.dangerButton}
+            onClick={() => props.onClear(props.request.id)}
+            disabled={props.syncing || props.clearing}
+          >
+            {props.clearing ? "Deleting..." : "Delete request"}
+          </button>
+        </div>
       </div>
     </article>
   );
@@ -170,11 +320,9 @@ function RequestCard(props: {
 
 function SearchResultCard(props: {
   result: SearchResultItem;
-  busy: boolean;
-  onRequest: (result: SearchResultItem) => void;
+  busyFormat: BookRequestFormat | null;
+  onRequest: (result: SearchResultItem, requestFormat: BookRequestFormat) => void;
 }) {
-  const isRequestable = props.result.availability === "requestable";
-
   return (
     <article className={styles.card}>
       <Cover title={props.result.title} imageUrl={props.result.coverUrl} size="small" />
@@ -187,61 +335,107 @@ function SearchResultCard(props: {
               {props.result.year ? ` - ${props.result.year}` : ""}
             </p>
           </div>
-          <span
-            className={`${styles.statusPill} ${
-              isRequestable ? styles.statusRequested : styles.statusSearching
-            }`}
-          >
-            {props.result.availabilityLabel}
-          </span>
         </div>
-        <p className={styles.cardMessage}>{props.result.availabilityDescription}</p>
-        {isRequestable ? (
-          <button
-            type="button"
-            className={styles.primaryButton}
-            onClick={() => props.onRequest(props.result)}
-            disabled={props.busy}
-          >
-            {props.busy ? "Requesting..." : "Request book"}
-          </button>
-        ) : props.result.availability === "requested-by-you" ? (
-          <Link href="/" className={styles.secondaryButton}>
-            View in My Books
-          </Link>
-        ) : props.result.availability === "already-requested" ? (
-          <Link href="/requested" className={styles.secondaryButton}>
-            View all requests
-          </Link>
-        ) : (
-          <div className={styles.systemNote}>No extra step needed for this one.</div>
-        )}
+        <div className={styles.requestOptionGrid}>
+          {REQUEST_FORMATS.map((format) => {
+            const action = props.result.actions[format];
+            const isRequestable = action.availability === "requestable";
+            const busy = props.busyFormat === format;
+            const formatLabel = BOOK_REQUEST_FORMAT_LABELS[format];
+            const requestLabel = `Request ${formatLabel}`;
+
+            return (
+              <button
+                key={format}
+                type="button"
+                className={isRequestable ? styles.primaryButton : styles.secondaryButton}
+                onClick={isRequestable ? () => props.onRequest(props.result, format) : undefined}
+                disabled={busy || !isRequestable}
+                title={!isRequestable ? action.availabilityDescription : undefined}
+                aria-label={`${requestLabel}. ${action.availabilityLabel}.`}
+              >
+                {busy ? `Requesting ${formatLabel}...` : requestLabel}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </article>
   );
 }
 
-export function KindlingScreen({ screen }: KindlingScreenProps) {
+export function KindlingScreen({
+  screen,
+  isMobileCompatibilityMode = false,
+}: KindlingScreenProps) {
   const [users, setUsers] = useState<LocalUser[]>([]);
+  const [profileDrafts, setProfileDrafts] = useState<
+    Record<number, { name: string; kindleEmail: string }>
+  >({});
+  const [newProfileDraft, setNewProfileDraft] = useState({
+    name: "",
+    kindleEmail: "",
+  });
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [requests, setRequests] = useState<BookRequestRecord[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(screen !== "request");
   const [requestsError, setRequestsError] = useState<string | null>(null);
+  const [requestsMessage, setRequestsMessage] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<BookRequestFilter>("all");
   const [syncingRequestId, setSyncingRequestId] = useState<number | null>(null);
+  const [clearingRequestId, setClearingRequestId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [requestingFingerprint, setRequestingFingerprint] = useState<string | null>(null);
+  const [requestingActionKey, setRequestingActionKey] = useState<string | null>(null);
   const [lastSearchedQuery, setLastSearchedQuery] = useState("");
+  const [deliverySettings, setDeliverySettings] = useState<DeliverySettings | null>(null);
+  const [watchDirectoryDraft, setWatchDirectoryDraft] = useState("");
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [profileCreating, setProfileCreating] = useState(false);
+  const [profileSavingId, setProfileSavingId] = useState<number | null>(null);
+  const [profileDeletingId, setProfileDeletingId] = useState<number | null>(null);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [deliveryTargets, setDeliveryTargets] = useState<Record<number, number>>({});
+  const [sendingRequestId, setSendingRequestId] = useState<number | null>(null);
+  const [deliveryMessage, setDeliveryMessage] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const activeSearchQueryRef = useRef<string | null>(null);
+  const latestSearchRequestRef = useRef(createLatestRequestGate());
   const isHouseholdScreen = screen === "requested";
   const isRequestListScreen = screen !== "request";
 
   const filteredRequests = requests.filter((request) =>
     matchesRequestFilter(request.status, activeFilter),
   );
+
+  const loadUsers = useCallback(async () => {
+    const data = sortUsersByName(await fetchJson<LocalUser[]>("/api/users"));
+    setUsers(data);
+    setProfileDrafts(
+      Object.fromEntries(
+        data.map((user) => [user.id, buildProfileDraft(user)]),
+      ),
+    );
+    return data;
+  }, []);
+
+  const loadDeliverySettings = useCallback(async () => {
+    const data = await fetchJson<DeliverySettings>("/api/settings/delivery");
+    setDeliverySettings(data);
+    setWatchDirectoryDraft(data.watchDirectory ?? "");
+    return data;
+  }, []);
+
+  const resetSearchState = useCallback(() => {
+    latestSearchRequestRef.current.invalidate();
+    activeSearchQueryRef.current = null;
+    setSearchLoading(false);
+  }, []);
 
   const refreshRequests = useCallback(
     async (silent = false) => {
@@ -254,6 +448,9 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
       }
 
       setRequestsError(null);
+      if (!silent) {
+        setRequestsMessage(null);
+      }
 
       try {
         const data = isHouseholdScreen
@@ -283,13 +480,14 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
 
       const trimmedQuery = query.trim();
       if (!trimmedQuery) {
+        resetSearchState();
         setSearchError("Please enter a title or author.");
         setSearchResults([]);
         setLastSearchedQuery("");
-        activeSearchQueryRef.current = null;
         return;
       }
 
+      const requestId = latestSearchRequestRef.current.begin();
       activeSearchQueryRef.current = trimmedQuery;
       setSearchLoading(true);
       setSearchError(null);
@@ -299,23 +497,33 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
         const data = await fetchJson<SearchResultItem[]>(
           `/api/search?q=${encodedQuery}&userId=${selectedUserId}`,
         );
+        if (!latestSearchRequestRef.current.isCurrent(requestId)) {
+          return;
+        }
         setSearchResults(data);
         setLastSearchedQuery(trimmedQuery);
       } catch (error) {
+        if (!latestSearchRequestRef.current.isCurrent(requestId)) {
+          return;
+        }
         setSearchError(error instanceof Error ? error.message : "Search is unavailable.");
         setSearchResults([]);
       } finally {
+        if (!latestSearchRequestRef.current.isCurrent(requestId)) {
+          return;
+        }
         activeSearchQueryRef.current = null;
         setSearchLoading(false);
       }
     },
-    [selectedUserId],
+    [resetSearchState, selectedUserId],
   );
 
   const maybeRunSearch = useCallback(async () => {
     const trimmedQuery = searchQuery.trim();
 
     if (!trimmedQuery) {
+      resetSearchState();
       setSearchError(null);
       setSearchResults([]);
       setLastSearchedQuery("");
@@ -331,12 +539,11 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
     }
 
     await performSearch(trimmedQuery);
-  }, [lastSearchedQuery, performSearch, searchQuery]);
+  }, [lastSearchedQuery, performSearch, resetSearchState, searchQuery]);
 
   useEffect(() => {
     void (async () => {
-      const data = await fetchJson<LocalUser[]>("/api/users");
-      setUsers(data);
+      const data = await loadUsers();
 
       const savedUserId = Number(window.localStorage.getItem("kindling:selected-user"));
       const nextUserId =
@@ -347,7 +554,21 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
         error instanceof Error ? error.message : "We could not load the family list.",
       );
     });
-  }, []);
+  }, [loadUsers]);
+
+  useEffect(() => {
+    if (!isHouseholdScreen) {
+      return;
+    }
+
+    void loadDeliverySettings().catch((error: unknown) => {
+      setSettingsError(
+        error instanceof Error
+          ? error.message
+          : "We could not load the Kindle delivery settings.",
+      );
+    });
+  }, [isHouseholdScreen, loadDeliverySettings]);
 
   useEffect(() => {
     if (!selectedUserId) {
@@ -376,14 +597,36 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
   }, [isRequestListScreen, refreshRequests, screen, selectedUserId]);
 
   useEffect(() => {
+    resetSearchState();
     setSearchResults([]);
     setSearchError(null);
     setLastSearchedQuery("");
-    activeSearchQueryRef.current = null;
-  }, [selectedUserId]);
+  }, [resetSearchState, selectedUserId]);
+
+  useEffect(() => {
+    setDeliveryTargets((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      for (const request of requests) {
+        const currentTarget = next[request.id];
+        const validTarget = users.some((user) => user.id === currentTarget);
+
+        if (!validTarget) {
+          next[request.id] = request.userId;
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [requests, users]);
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
   const canRenderRequestSection = isHouseholdScreen || Boolean(selectedUser);
+  const pageClassName = isMobileCompatibilityMode
+    ? `${styles.page} ${styles.pageMobile}`
+    : styles.page;
 
   const counts = {
     all: requests.length,
@@ -393,12 +636,23 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
     ).length,
   };
 
-  async function handleRequest(result: SearchResultItem) {
+  async function handleRequest(
+    result: SearchResultItem,
+    requestFormat: BookRequestFormat,
+  ) {
     if (!selectedUserId) {
       return;
     }
 
-    setRequestingFingerprint(result.fingerprint);
+    const action = result.actions[requestFormat];
+    if (!action.source) {
+      setSearchError(action.availabilityDescription);
+      return;
+    }
+
+    const actionKey = `${result.fingerprint}:${requestFormat}`;
+
+    setRequestingActionKey(actionKey);
     setSearchError(null);
 
     try {
@@ -406,7 +660,8 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
         method: "POST",
         body: JSON.stringify({
           userId: selectedUserId,
-          selection: result.source,
+          requestFormat,
+          selection: action.source,
         }),
       });
 
@@ -415,10 +670,16 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
           entry.fingerprint === result.fingerprint
             ? {
                 ...entry,
-                availability: "requested-by-you",
-                availabilityLabel: "Already in My Books",
-                availabilityDescription: created.statusMessage ?? "Saved in your list.",
-                request: created,
+                actions: {
+                  ...entry.actions,
+                  [requestFormat]: {
+                    ...entry.actions[requestFormat],
+                    availability: "requested-by-you",
+                    availabilityLabel: "Already in My List",
+                    availabilityDescription: created.statusMessage ?? "Saved in your list.",
+                    request: created,
+                  },
+                },
               }
             : entry,
         ),
@@ -430,13 +691,14 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
         error instanceof Error ? error.message : "We could not save that request.",
       );
     } finally {
-      setRequestingFingerprint(null);
+      setRequestingActionKey(null);
     }
   }
 
   async function handleSyncRequest(requestId: number) {
     setSyncingRequestId(requestId);
     setRequestsError(null);
+    setRequestsMessage(null);
 
     try {
       const updated = await fetchJson<BookRequestRecord>(`/api/requests/${requestId}/sync`, {
@@ -444,7 +706,9 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
       });
 
       setRequests((current) =>
-        current.map((request) => (request.id === updated.id ? updated : request)),
+        updated.status === "not-monitored"
+          ? current.filter((request) => request.id !== updated.id)
+          : current.map((request) => (request.id === updated.id ? updated : request)),
       );
     } catch (error) {
       setRequestsError(
@@ -455,23 +719,213 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
     }
   }
 
+  async function handleClearRequest(requestId: number) {
+    const shouldClear = window.confirm(
+      "Delete this request from Readarr? Kindling will delete any existing file it can find and reset the request to Not Monitored.",
+    );
+    if (!shouldClear) {
+      return;
+    }
+
+    setClearingRequestId(requestId);
+    setRequestsError(null);
+    setRequestsMessage(null);
+
+    try {
+      const updated = await fetchJson<BookRequestRecord>(`/api/requests/${requestId}`, {
+        method: "DELETE",
+      });
+
+      setRequests((current) => current.filter((request) => request.id !== updated.id));
+      setRequestsMessage(updated.statusMessage ?? "Request deleted.");
+    } catch (error) {
+      setRequestsError(
+        error instanceof Error ? error.message : "We could not delete that request.",
+      );
+    } finally {
+      setClearingRequestId(null);
+    }
+  }
+
+  async function handleProfileSave(userId: number) {
+    const draft = profileDrafts[userId];
+    if (!draft) {
+      return;
+    }
+
+    setProfileSavingId(userId);
+    setProfileError(null);
+    setProfileMessage(null);
+
+    try {
+      const updated = await fetchJson<LocalUser>(`/api/users/${userId}`, {
+        method: "PATCH",
+        body: JSON.stringify(draft),
+      });
+
+      setUsers((current) =>
+        sortUsersByName(current.map((user) => (user.id === updated.id ? updated : user))),
+      );
+      setProfileDrafts((current) => ({
+        ...current,
+        [updated.id]: buildProfileDraft(updated),
+      }));
+      setProfileMessage(`Saved ${updated.name}'s profile.`);
+      await refreshRequests(true);
+    } catch (error) {
+      setProfileError(
+        error instanceof Error ? error.message : "We could not save that profile.",
+      );
+    } finally {
+      setProfileSavingId(null);
+    }
+  }
+
+  async function handleProfileCreate() {
+    setProfileCreating(true);
+    setProfileError(null);
+    setProfileMessage(null);
+
+    try {
+      const created = await fetchJson<LocalUser>("/api/users", {
+        method: "POST",
+        body: JSON.stringify(newProfileDraft),
+      });
+
+      setUsers((current) => sortUsersByName([...current, created]));
+      setProfileDrafts((current) => ({
+        ...current,
+        [created.id]: buildProfileDraft(created),
+      }));
+      setNewProfileDraft({
+        name: "",
+        kindleEmail: "",
+      });
+      setSelectedUserId(created.id);
+      setProfileMessage(`Added ${created.name}'s profile.`);
+    } catch (error) {
+      setProfileError(
+        error instanceof Error ? error.message : "We could not add that profile.",
+      );
+    } finally {
+      setProfileCreating(false);
+    }
+  }
+
+  async function handleProfileDelete(user: LocalUser) {
+    const shouldDelete = window.confirm(`Delete ${user.name}'s profile from Kindling?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    setProfileDeletingId(user.id);
+    setProfileError(null);
+    setProfileMessage(null);
+
+    try {
+      const deleted = await fetchJson<LocalUser>(`/api/users/${user.id}`, {
+        method: "DELETE",
+      });
+      const nextUsers = sortUsersByName(users.filter((entry) => entry.id !== deleted.id));
+
+      setUsers(nextUsers);
+      setProfileDrafts((current) => {
+        const next = { ...current };
+        delete next[deleted.id];
+        return next;
+      });
+
+      if (selectedUserId === deleted.id) {
+        setSelectedUserId(nextUsers[0]?.id ?? null);
+      }
+
+      setProfileMessage(`Deleted ${deleted.name}'s profile.`);
+    } catch (error) {
+      setProfileError(
+        error instanceof Error ? error.message : "We could not delete that profile.",
+      );
+    } finally {
+      setProfileDeletingId(null);
+    }
+  }
+
+  async function handleSaveWatchDirectory() {
+    setSettingsSaving(true);
+    setSettingsError(null);
+    setSettingsMessage(null);
+
+    try {
+      const updated = await fetchJson<DeliverySettings>("/api/settings/delivery", {
+        method: "PUT",
+        body: JSON.stringify({
+          watchDirectory: watchDirectoryDraft,
+        }),
+      });
+
+      setDeliverySettings(updated);
+      setWatchDirectoryDraft(updated.watchDirectory ?? "");
+      setSettingsMessage(
+        updated.watchDirectory
+          ? updated.watchDirectoryMessage
+          : "Watched folder cleared.",
+      );
+      await refreshRequests(true);
+    } catch (error) {
+      setSettingsError(
+        error instanceof Error ? error.message : "We could not save the watched folder.",
+      );
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function handleSendToKindle(requestId: number) {
+    const recipientUserId = deliveryTargets[requestId];
+    if (!recipientUserId) {
+      return;
+    }
+
+    setSendingRequestId(requestId);
+    setDeliveryError(null);
+    setDeliveryMessage(null);
+
+    try {
+      const result = await fetchJson<SendToKindleResult>(`/api/requests/${requestId}/deliver`, {
+        method: "POST",
+        body: JSON.stringify({
+          recipientUserId,
+        }),
+      });
+
+      setRequests((current) =>
+        current.map((request) => (request.id === result.request.id ? result.request : request)),
+      );
+      setDeliveryMessage(result.attempt.message ?? "Book sent to Kindle.");
+    } catch (error) {
+      setDeliveryError(
+        error instanceof Error ? error.message : "We could not send that book right now.",
+      );
+    } finally {
+      setSendingRequestId(null);
+    }
+  }
+
   return (
-    <main className={styles.page}>
+    <main className={pageClassName}>
       <section className={styles.hero}>
         <div className={styles.heroBrand}>
           <img src="/kindling-mark.svg" alt="" className={styles.brandMark} />
           <div>
-            <p className={styles.eyebrow}>Family book requests</p>
             <h1>Kindling</h1>
           </div>
         </div>
-        <p className={styles.heroText}>
-          {screen === "books"
-            ? "A calm, simple list of the books your family has asked for."
-            : screen === "request"
-              ? "Search by title or author, then tap once to ask for a book."
+        {screen === "books" ? null : (
+          <p className={styles.heroText}>
+            {screen === "request"
+              ? "Search by title or author, then choose EPUB or Audiobook with one tap."
               : "A full household view of every request Kindling has recorded."}
-        </p>
+          </p>
+        )}
       </section>
 
       <section className={styles.shell}>
@@ -537,17 +991,17 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
               <div>
                 <p className={styles.sectionLabel}>
                   {screen === "books"
-                    ? "My Books"
+                    ? "My Requests"
                     : screen === "request"
-                      ? "Request Book"
+                      ? "Request Title"
                       : "All Requests"}
                 </p>
                 <h2>
                   {screen === "books"
-                    ? `${selectedUser?.name}'s requested books`
+                    ? `${selectedUser?.name}'s requests`
                     : screen === "request"
-                      ? `Search for a book for ${selectedUser?.name}`
-                      : "Everything the house has requested"}
+                      ? `Search for a title for ${selectedUser?.name}`
+                      : "House Requests"}
                 </h2>
               </div>
               {isRequestListScreen ? (
@@ -579,6 +1033,13 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
                 </div>
 
                 {requestsError ? <p className={styles.errorBanner}>{requestsError}</p> : null}
+                {requestsMessage ? (
+                  <p className={styles.successBanner}>{requestsMessage}</p>
+                ) : null}
+                {deliveryError ? <p className={styles.errorBanner}>{deliveryError}</p> : null}
+                {deliveryMessage ? (
+                  <p className={styles.successBanner}>{deliveryMessage}</p>
+                ) : null}
 
                 {requestsLoading ? (
                   <SkeletonCards />
@@ -589,8 +1050,23 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
                         key={request.id}
                         request={request}
                         syncing={syncingRequestId === request.id}
+                        clearing={clearingRequestId === request.id}
                         onSync={handleSyncRequest}
+                        onClear={handleClearRequest}
                         showRequester={isHouseholdScreen}
+                        showDeliveryControls={isHouseholdScreen}
+                        smtpConfigured={deliverySettings?.smtpConfigured}
+                        smtpMessage={deliverySettings?.smtpMessage}
+                        deliveryUsers={users}
+                        selectedRecipientId={deliveryTargets[request.id]}
+                        sending={sendingRequestId === request.id}
+                        onRecipientChange={(requestId, userId) =>
+                          setDeliveryTargets((current) => ({
+                            ...current,
+                            [requestId]: userId,
+                          }))
+                        }
+                        onSendToKindle={handleSendToKindle}
                       />
                     ))}
                   </div>
@@ -600,7 +1076,7 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
                     body={
                       isHouseholdScreen
                         ? "When someone requests a book, it will appear here with its latest status."
-                        : "When you request a book, it will show up here with a clear status."
+                        : "When you request an EPUB or Audiobook, it will show up here with a clear status."
                     }
                     actionLabel="Request a book"
                     actionHref="/request"
@@ -641,7 +1117,12 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
                       <SearchResultCard
                         key={result.fingerprint}
                         result={result}
-                        busy={requestingFingerprint === result.fingerprint}
+                        busyFormat={
+                          REQUEST_FORMATS.find(
+                            (format) =>
+                              requestingActionKey === `${result.fingerprint}:${format}`,
+                          ) ?? null
+                        }
                         onRequest={handleRequest}
                       />
                     ))}
@@ -654,7 +1135,7 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
                 ) : (
                   <EmptyState
                     title="Search to begin"
-                    body="Type the title or author you want, then choose the right match."
+                    body="Type the title or author you want, then choose EPUB or Audiobook for the right match."
                   />
                 )}
               </>
@@ -668,6 +1149,204 @@ export function KindlingScreen({ screen }: KindlingScreenProps) {
             />
           </section>
         )}
+
+        {isHouseholdScreen ? (
+          <section className={styles.sectionCard}>
+            <div className={styles.sectionHeading}>
+              <div>
+                <p className={styles.sectionLabel}>Profiles and delivery</p>
+                <h2>Configure Kindles and the watched folder</h2>
+              </div>
+            </div>
+
+            {profileError ? <p className={styles.errorBanner}>{profileError}</p> : null}
+            {profileMessage ? <p className={styles.successBanner}>{profileMessage}</p> : null}
+            {settingsError ? <p className={styles.errorBanner}>{settingsError}</p> : null}
+            {settingsMessage ? <p className={styles.successBanner}>{settingsMessage}</p> : null}
+
+            <div className={styles.settingsGrid}>
+              <div className={styles.settingsPane}>
+                <p className={styles.sectionLabel}>Profiles</p>
+                <div className={styles.profileList}>
+                  <form
+                    className={styles.profileCard}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void handleProfileCreate();
+                    }}
+                  >
+                    <p className={styles.cardMessage}>
+                      Add a household profile for its own requests and Kindle delivery address.
+                    </p>
+                    <div className={styles.formGrid}>
+                      <label className={styles.field}>
+                        <span className={styles.fieldLabel}>Profile name</span>
+                        <input
+                          type="text"
+                          className={styles.textInput}
+                          value={newProfileDraft.name}
+                          onChange={(event) =>
+                            setNewProfileDraft((current) => ({
+                              ...current,
+                              name: event.target.value,
+                            }))
+                          }
+                          placeholder="Aunt May"
+                        />
+                      </label>
+                      <label className={styles.field}>
+                        <span className={styles.fieldLabel}>Kindle email</span>
+                        <input
+                          type="email"
+                          className={styles.textInput}
+                          value={newProfileDraft.kindleEmail}
+                          onChange={(event) =>
+                            setNewProfileDraft((current) => ({
+                              ...current,
+                              kindleEmail: event.target.value,
+                            }))
+                          }
+                          placeholder="name@kindle.com"
+                        />
+                      </label>
+                    </div>
+                    <button
+                      type="submit"
+                      className={styles.primaryButton}
+                      disabled={profileCreating}
+                    >
+                      {profileCreating ? "Adding..." : "Add profile"}
+                    </button>
+                  </form>
+                  {users.map((user) => {
+                    const deleteDisabledReason = getProfileDeleteDisabledReason(
+                      user,
+                      users.length,
+                    );
+
+                    return (
+                      <form
+                        key={user.id}
+                        className={styles.profileCard}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void handleProfileSave(user.id);
+                        }}
+                      >
+                        <div className={styles.formGrid}>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>Profile name</span>
+                            <input
+                              type="text"
+                              className={styles.textInput}
+                              value={profileDrafts[user.id]?.name ?? ""}
+                              onChange={(event) =>
+                                setProfileDrafts((current) => ({
+                                  ...current,
+                                  [user.id]: {
+                                    name: event.target.value,
+                                    kindleEmail: current[user.id]?.kindleEmail ?? "",
+                                  },
+                                }))
+                              }
+                            />
+                          </label>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>Kindle email</span>
+                            <input
+                              type="email"
+                              className={styles.textInput}
+                              value={profileDrafts[user.id]?.kindleEmail ?? ""}
+                              onChange={(event) =>
+                                setProfileDrafts((current) => ({
+                                  ...current,
+                                  [user.id]: {
+                                    name: current[user.id]?.name ?? user.name,
+                                    kindleEmail: event.target.value,
+                                  },
+                                }))
+                              }
+                              placeholder="name@kindle.com"
+                            />
+                          </label>
+                        </div>
+                        <p className={styles.cardMessage}>
+                          {user.requestCount > 0
+                            ? `${formatSavedRequestCount(user.requestCount)} ${user.requestCount === 1 ? "is" : "are"} attached to this profile.`
+                            : "No saved requests are attached to this profile yet."}
+                        </p>
+                        {deleteDisabledReason ? (
+                          <p className={styles.systemNote}>{deleteDisabledReason}</p>
+                        ) : null}
+                        <div className={styles.actionRow}>
+                          <button
+                            type="submit"
+                            className={styles.secondaryButton}
+                            disabled={
+                              profileSavingId === user.id || profileDeletingId === user.id
+                            }
+                          >
+                            {profileSavingId === user.id ? "Saving..." : "Save profile"}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.dangerButton}
+                            onClick={() => void handleProfileDelete(user)}
+                            disabled={
+                              profileSavingId === user.id ||
+                              profileDeletingId === user.id ||
+                              Boolean(deleteDisabledReason)
+                            }
+                          >
+                            {profileDeletingId === user.id ? "Deleting..." : "Delete profile"}
+                          </button>
+                        </div>
+                      </form>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <form
+                className={styles.settingsPane}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSaveWatchDirectory();
+                }}
+              >
+                <p className={styles.sectionLabel}>Watched folder</p>
+                <p className={styles.cardMessage}>
+                  Kindling scans this folder and every subfolder. When a requested book shows up
+                  there, it marks the request ready and can email the file to Kindle.
+                </p>
+                <label className={styles.field}>
+                  <span className={styles.fieldLabel}>Folder path</span>
+                  <input
+                    type="text"
+                    className={styles.textInput}
+                    value={watchDirectoryDraft}
+                    onChange={(event) => setWatchDirectoryDraft(event.target.value)}
+                    placeholder="C:\\Books\\Ready for Kindle"
+                  />
+                </label>
+                <p className={styles.systemNote}>
+                  {deliverySettings?.watchDirectoryMessage ??
+                    "Choose a watched folder to enable automatic matching."}
+                </p>
+                <p className={styles.systemNote}>
+                  {deliverySettings?.smtpMessage ??
+                    "Add SMTP details to enable Kindle delivery."}
+                </p>
+                {deliverySettings?.worker.expected ? (
+                  <p className={styles.systemNote}>{deliverySettings.worker.message}</p>
+                ) : null}
+                <button type="submit" className={styles.primaryButton} disabled={settingsSaving}>
+                  {settingsSaving ? "Saving..." : "Save watched folder"}
+                </button>
+              </form>
+            </div>
+          </section>
+        ) : null}
       </section>
     </main>
   );

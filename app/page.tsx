@@ -1,5 +1,13 @@
 import { KindlingScreen } from "@/components/kindling-screen";
+import { getIsMobileDevice } from "@/lib/mobile-device.server";
 
-export default function Home() {
-  return <KindlingScreen screen="books" />;
+export default async function Home() {
+  const isMobileDevice = await getIsMobileDevice();
+
+  return (
+    <KindlingScreen
+      screen="books"
+      isMobileCompatibilityMode={isMobileDevice}
+    />
+  );
 }

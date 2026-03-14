@@ -1,11 +1,16 @@
 import type Database from "better-sqlite3";
 import { getDb } from "@/lib/db/client";
-import type { BookRequestRecord, BookRequestStatus } from "@/lib/requests/types";
+import type {
+  BookRequestFormat,
+  BookRequestRecord,
+  BookRequestStatus,
+} from "@/lib/requests/types";
 
 type BookRequestRow = {
   id: number;
   user_id: number;
   user_name: string;
+  request_format: BookRequestFormat;
   request_fingerprint: string;
   requested_title: string;
   requested_author: string;
@@ -22,12 +27,19 @@ type BookRequestRow = {
   cover_url: string | null;
   notes: string | null;
   last_synced_at: string | null;
+  matched_file_path: string | null;
+  matched_at: string | null;
+  last_delivery_at: string | null;
+  last_delivery_recipient: string | null;
+  last_delivery_trigger: "automatic" | "manual" | null;
+  last_delivery_message: string | null;
   created_at: string;
   updated_at: string;
 };
 
 export type CreateBookRequestInput = {
   userId: number;
+  requestFormat: BookRequestFormat;
   requestFingerprint: string;
   requestedTitle: string;
   requestedAuthor: string;
@@ -44,6 +56,12 @@ export type CreateBookRequestInput = {
   coverUrl: string | null;
   notes: string | null;
   lastSyncedAt: string | null;
+  matchedFilePath: string | null;
+  matchedAt: string | null;
+  lastDeliveryAt: string | null;
+  lastDeliveryRecipient: string | null;
+  lastDeliveryTrigger: "automatic" | "manual" | null;
+  lastDeliveryMessage: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -59,6 +77,7 @@ function mapBookRequest(row: BookRequestRow): BookRequestRecord {
     id: row.id,
     userId: row.user_id,
     userName: row.user_name,
+    requestFormat: row.request_format,
     requestFingerprint: row.request_fingerprint,
     requestedTitle: row.requested_title,
     requestedAuthor: row.requested_author,
@@ -75,6 +94,12 @@ function mapBookRequest(row: BookRequestRow): BookRequestRecord {
     coverUrl: row.cover_url,
     notes: row.notes,
     lastSyncedAt: row.last_synced_at,
+    matchedFilePath: row.matched_file_path,
+    matchedAt: row.matched_at,
+    lastDeliveryAt: row.last_delivery_at,
+    lastDeliveryRecipient: row.last_delivery_recipient,
+    lastDeliveryTrigger: row.last_delivery_trigger,
+    lastDeliveryMessage: row.last_delivery_message,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -90,6 +115,7 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       book_requests.id,
       book_requests.user_id,
       users.name AS user_name,
+      book_requests.request_format,
       book_requests.request_fingerprint,
       book_requests.requested_title,
       book_requests.requested_author,
@@ -106,6 +132,12 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       book_requests.cover_url,
       book_requests.notes,
       book_requests.last_synced_at,
+      book_requests.matched_file_path,
+      book_requests.matched_at,
+      book_requests.last_delivery_at,
+      book_requests.last_delivery_recipient,
+      book_requests.last_delivery_trigger,
+      book_requests.last_delivery_message,
       book_requests.created_at,
       book_requests.updated_at
     FROM book_requests
@@ -120,11 +152,15 @@ export function createBookRequestsRepository(database: Database.Database = getDb
   );
   const getByIdStatement = database.prepare(`${selectBase} WHERE book_requests.id = ?`);
   const getByUserAndFingerprintStatement = database.prepare(
-    `${selectBase} WHERE book_requests.user_id = ? AND book_requests.request_fingerprint = ?`,
+    `${selectBase}
+     WHERE book_requests.user_id = ?
+     AND book_requests.request_fingerprint = ?
+     AND book_requests.request_format = ?`,
   );
   const insertStatement = database.prepare(`
     INSERT INTO book_requests (
       user_id,
+      request_format,
       request_fingerprint,
       requested_title,
       requested_author,
@@ -141,9 +177,15 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       cover_url,
       notes,
       last_synced_at,
+      matched_file_path,
+      matched_at,
+      last_delivery_at,
+      last_delivery_recipient,
+      last_delivery_trigger,
+      last_delivery_message,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertStatusHistoryStatement = database.prepare(`
     INSERT INTO status_history (
@@ -189,8 +231,16 @@ export function createBookRequestsRepository(database: Database.Database = getDb
 
     findById,
 
-    findByUserAndFingerprint(userId: number, fingerprint: string) {
-      const row = getByUserAndFingerprintStatement.get(userId, fingerprint) as
+    findByUserAndFingerprint(
+      userId: number,
+      fingerprint: string,
+      requestFormat: BookRequestFormat,
+    ) {
+      const row = getByUserAndFingerprintStatement.get(
+        userId,
+        fingerprint,
+        requestFormat,
+      ) as
         | BookRequestRow
         | undefined;
       return row ? mapBookRequest(row) : null;
@@ -232,6 +282,7 @@ export function createBookRequestsRepository(database: Database.Database = getDb
     create(input: CreateBookRequestInput) {
       const result = insertStatement.run(
         input.userId,
+        input.requestFormat,
         input.requestFingerprint,
         input.requestedTitle,
         input.requestedAuthor,
@@ -248,6 +299,12 @@ export function createBookRequestsRepository(database: Database.Database = getDb
         input.coverUrl,
         input.notes,
         input.lastSyncedAt,
+        input.matchedFilePath,
+        input.matchedAt,
+        input.lastDeliveryAt,
+        input.lastDeliveryRecipient,
+        input.lastDeliveryTrigger,
+        input.lastDeliveryMessage,
         input.createdAt,
         input.updatedAt,
       );
@@ -270,6 +327,7 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       }
 
       const entries = [
+        ["request_format", patch.requestFormat],
         ["request_fingerprint", patch.requestFingerprint],
         ["requested_title", patch.requestedTitle],
         ["requested_author", patch.requestedAuthor],
@@ -286,6 +344,12 @@ export function createBookRequestsRepository(database: Database.Database = getDb
         ["cover_url", patch.coverUrl],
         ["notes", patch.notes],
         ["last_synced_at", patch.lastSyncedAt],
+        ["matched_file_path", patch.matchedFilePath],
+        ["matched_at", patch.matchedAt],
+        ["last_delivery_at", patch.lastDeliveryAt],
+        ["last_delivery_recipient", patch.lastDeliveryRecipient],
+        ["last_delivery_trigger", patch.lastDeliveryTrigger],
+        ["last_delivery_message", patch.lastDeliveryMessage],
         ["created_at", patch.createdAt],
       ] as const;
 

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { requireApiSession } from "@/lib/auth";
+import { ensureBackgroundServices } from "@/lib/bootstrap";
 import { createRequestService } from "@/lib/requests/service";
 import { ensureDefaultUsers } from "@/lib/users/service";
 
@@ -39,10 +41,17 @@ const selectionSchema = z
 
 const createBodySchema = z.object({
   userId: z.number().int().positive(),
+  requestFormat: z.enum(["ebook", "audiobook"]),
   selection: selectionSchema,
 });
 
 export async function GET(request: NextRequest) {
+  ensureBackgroundServices();
+  const authError = requireApiSession(request);
+  if (authError) {
+    return authError;
+  }
+
   ensureDefaultUsers();
 
   const parsed = getQuerySchema.safeParse({
@@ -73,6 +82,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  ensureBackgroundServices();
+  const authError = requireApiSession(request, { mutation: true });
+  if (authError) {
+    return authError;
+  }
+
   ensureDefaultUsers();
 
   const body = await request.json().catch(() => null);
@@ -88,6 +103,7 @@ export async function POST(request: NextRequest) {
   try {
     const created = await createRequestService().createRequest(
       parsed.data.userId,
+      parsed.data.requestFormat,
       parsed.data.selection,
     );
 

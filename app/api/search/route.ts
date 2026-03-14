@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { requireApiSession } from "@/lib/auth";
+import { ensureBackgroundServices } from "@/lib/bootstrap";
 import { createRequestService } from "@/lib/requests/service";
 import { ensureDefaultUsers } from "@/lib/users/service";
 
@@ -12,6 +14,12 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
+  ensureBackgroundServices();
+  const authError = requireApiSession(request);
+  if (authError) {
+    return authError;
+  }
+
   ensureDefaultUsers();
 
   const parsed = querySchema.safeParse({

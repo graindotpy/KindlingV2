@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Nunito, Sora } from "next/font/google";
 import "./globals.css";
 
@@ -20,6 +20,11 @@ export const metadata: Metadata = {
     template: "%s | Kindling",
   },
   description: "A gentle family-friendly book request app that sits in front of Readarr.",
+};
+
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#120c09",
 };
 
 export default function RootLayout({

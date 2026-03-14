@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { requireApiSession } from "@/lib/auth";
+import { ensureBackgroundServices } from "@/lib/bootstrap";
 import { createRequestService } from "@/lib/requests/service";
 import { ensureDefaultUsers } from "@/lib/users/service";
 
@@ -6,9 +8,15 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  ensureBackgroundServices();
+  const authError = requireApiSession(request, { mutation: true });
+  if (authError) {
+    return authError;
+  }
+
   ensureDefaultUsers();
 
   const { id } = await context.params;

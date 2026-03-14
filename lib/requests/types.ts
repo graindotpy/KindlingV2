@@ -1,16 +1,21 @@
 import type { ReadarrLookupBook } from "@/lib/readarr/types";
+import type { DeliveryWorkerStatus } from "@/lib/delivery/types";
+
+export type BookRequestFormat = "ebook" | "audiobook";
 
 export type BookRequestStatus =
   | "requested"
   | "searching"
   | "downloading"
   | "available"
+  | "not-monitored"
   | "failed";
 
 export type BookRequestFilter = "all" | "active" | "available";
 
 export type SearchResultAvailability =
   | "requestable"
+  | "unavailable"
   | "requested-by-you"
   | "already-requested"
   | "already-available";
@@ -18,13 +23,16 @@ export type SearchResultAvailability =
 export type LocalUser = {
   id: number;
   name: string;
+  kindleEmail: string | null;
   createdAt: string;
+  requestCount: number;
 };
 
 export type BookRequestRecord = {
   id: number;
   userId: number;
   userName: string;
+  requestFormat: BookRequestFormat;
   requestFingerprint: string;
   requestedTitle: string;
   requestedAuthor: string;
@@ -41,8 +49,23 @@ export type BookRequestRecord = {
   coverUrl: string | null;
   notes: string | null;
   lastSyncedAt: string | null;
+  matchedFilePath: string | null;
+  matchedAt: string | null;
+  lastDeliveryAt: string | null;
+  lastDeliveryRecipient: string | null;
+  lastDeliveryTrigger: "automatic" | "manual" | null;
+  lastDeliveryMessage: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type SearchResultRequestAction = {
+  format: BookRequestFormat;
+  availability: SearchResultAvailability;
+  availabilityLabel: string;
+  availabilityDescription: string;
+  request: BookRequestRecord | null;
+  source: ReadarrLookupBook | null;
 };
 
 export type SearchResultItem = {
@@ -51,11 +74,7 @@ export type SearchResultItem = {
   author: string;
   year: number | null;
   coverUrl: string | null;
-  availability: SearchResultAvailability;
-  availabilityLabel: string;
-  availabilityDescription: string;
-  request: BookRequestRecord | null;
-  source: ReadarrLookupBook;
+  actions: Record<BookRequestFormat, SearchResultRequestAction>;
 };
 
 export type HealthResponse = {
@@ -67,4 +86,11 @@ export type HealthResponse = {
     version: string | null;
     message: string;
   };
+  audiobookReadarr: {
+    configured: boolean;
+    reachable: boolean;
+    version: string | null;
+    message: string;
+  };
+  worker: DeliveryWorkerStatus;
 };

@@ -3,16 +3,168 @@
   padding: 28px;
 }
 
+.pageMobile {
+  min-height: 100dvh;
+  padding: calc(18px + env(safe-area-inset-top)) 14px
+    calc(116px + env(safe-area-inset-bottom));
+}
+
+.pageMobile .hero {
+  margin-bottom: 16px;
+  padding: 20px;
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top left, var(--ember-glow), transparent 42%),
+    linear-gradient(135deg, rgba(46, 28, 22, 0.98), rgba(27, 18, 15, 0.92)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+}
+
+.pageMobile .heroBrand {
+  align-items: flex-start;
+}
+
+.pageMobile .brandMark {
+  width: 56px;
+  height: 56px;
+}
+
+.pageMobile .heroText,
+.pageMobile .topBarText,
+.pageMobile .cardMessage {
+  font-size: 1rem;
+}
+
+.pageMobile .topBar,
+.pageMobile .sectionCard,
+.pageMobile .card {
+  backdrop-filter: none;
+  background: var(--paper-strong);
+}
+
+.pageMobile .topBar {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.pageMobile .userRow,
+.pageMobile .filterRow {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  margin-right: -2px;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pageMobile .userRow::-webkit-scrollbar,
+.pageMobile .filterRow::-webkit-scrollbar {
+  display: none;
+}
+
+.pageMobile .userChip,
+.pageMobile .filterChip {
+  flex: 0 0 auto;
+}
+
+.pageMobile .navTabs {
+  position: fixed;
+  left: 14px;
+  right: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom));
+  z-index: 40;
+  justify-content: stretch;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: rgba(22, 14, 11, 0.96);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.36),
+    0 0 40px rgba(243, 154, 87, 0.08);
+}
+
+.pageMobile .navTab {
+  flex: 1 1 0;
+  min-height: 52px;
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.pageMobile .sectionCard {
+  padding: 18px;
+  border-radius: 24px;
+}
+
+.pageMobile .sectionHeading,
+.pageMobile .cardTop {
+  display: grid;
+  gap: 14px;
+}
+
+.pageMobile .sectionHeading .secondaryButton {
+  width: 100%;
+}
+
+.pageMobile .searchBar,
+.pageMobile .settingsGrid,
+.pageMobile .formGrid,
+.pageMobile .inlineFieldGroup,
+.pageMobile .actionRow,
+.pageMobile .requestOptionGrid {
+  grid-template-columns: 1fr;
+}
+
+.pageMobile .cardGrid {
+  grid-template-columns: 1fr;
+}
+
+.pageMobile .card {
+  grid-template-columns: 88px 1fr;
+  gap: 14px;
+  align-items: start;
+  border-radius: 22px;
+}
+
+.pageMobile .coverLarge {
+  height: 132px;
+}
+
+.pageMobile .coverSmall {
+  height: 120px;
+}
+
+.pageMobile .statusPill {
+  justify-self: start;
+}
+
+.pageMobile .settingsPane {
+  padding: 16px;
+}
+
+.pageMobile .profileCard {
+  padding: 14px;
+}
+
+.pageMobile .deliveryPanel {
+  padding: 12px;
+}
+
+.pageMobile .emptyState {
+  padding: 20px 12px;
+}
+
 .hero {
   max-width: 1180px;
   margin: 0 auto 18px;
   padding: 24px 28px;
   border-radius: 32px;
   background:
-    linear-gradient(135deg, rgba(255, 248, 236, 0.95), rgba(255, 234, 205, 0.8)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent);
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  box-shadow: var(--shadow);
+    radial-gradient(circle at top left, var(--ember-glow), transparent 38%),
+    linear-gradient(135deg, rgba(49, 31, 24, 0.95), rgba(24, 17, 14, 0.82)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+  border: 1px solid var(--line);
+  box-shadow:
+    var(--shadow),
+    0 0 80px rgba(243, 154, 87, 0.08);
 }
 
 .heroBrand {
@@ -59,14 +211,14 @@
   margin-top: 14px;
   font-size: 1.1rem;
   line-height: 1.6;
-  color: rgba(33, 53, 43, 0.82);
+  color: var(--foreground-muted);
 }
 
 .topBarText {
   margin-top: 10px;
   max-width: 30rem;
   line-height: 1.5;
-  color: rgba(33, 53, 43, 0.82);
+  color: var(--foreground-muted);
 }
 
 .shell {
@@ -79,8 +231,10 @@
 .card {
   background: var(--paper);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.65);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+  box-shadow:
+    var(--shadow),
+    inset 0 1px 0 rgba(255, 204, 167, 0.04);
 }
 
 .topBar,
@@ -113,16 +267,28 @@
 .filterChip,
 .primaryButton,
 .secondaryButton,
-.ghostButton {
+.dangerButton,
+.ghostButton,
+.selectInput,
+.textInput {
   border-radius: 999px;
-  border: none;
-  cursor: pointer;
   transition:
     transform 120ms ease,
     background-color 120ms ease,
     color 120ms ease,
     border-color 120ms ease,
     box-shadow 120ms ease;
+}
+
+.userChip,
+.navTab,
+.filterChip,
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.ghostButton {
+  border: none;
+  cursor: pointer;
 }
 
 .userChip,
@@ -133,7 +299,7 @@
 }
 
 .userChip {
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--surface);
   color: var(--foreground);
 }
 
@@ -142,14 +308,15 @@
 .filterChipActive,
 .navTabActive {
   background: var(--accent);
-  color: white;
+  color: #1d130d;
 }
 
 .navTabs {
   align-self: flex-start;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.04);
   padding: 8px;
   border-radius: 999px;
+  border: 1px solid var(--line);
 }
 
 .navTab {
@@ -178,7 +345,7 @@
 }
 
 .filterChip {
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface);
   color: var(--foreground);
 }
 
@@ -192,19 +359,34 @@
 .searchInput {
   min-height: 60px;
   padding: 0 20px;
-  border-radius: 20px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
   font-size: 1.05rem;
 }
 
-.searchInput:focus {
-  outline: 3px solid rgba(216, 109, 57, 0.18);
-  border-color: rgba(216, 109, 57, 0.4);
+.searchInput,
+.selectInput,
+.textInput {
+  border-radius: 20px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-strong);
+  color: var(--foreground);
+}
+
+.searchInput:focus,
+.selectInput:focus,
+.textInput:focus {
+  outline: 3px solid rgba(241, 138, 81, 0.22);
+  border-color: rgba(241, 138, 81, 0.5);
+}
+
+.textInput,
+.selectInput {
+  min-height: 52px;
+  padding: 0 18px;
 }
 
 .primaryButton,
 .secondaryButton,
+.dangerButton,
 .ghostButton {
   display: inline-flex;
   align-items: center;
@@ -215,10 +397,30 @@
 }
 
 .secondaryButton,
+.dangerButton,
 .ghostButton {
-  background: rgba(255, 255, 255, 0.78);
-  color: var(--foreground);
   border: 1px solid var(--line);
+}
+
+.secondaryButton,
+.ghostButton {
+  background: var(--surface);
+  color: var(--foreground);
+}
+
+.dangerButton {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.actionRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.actionRowSingle {
+  grid-template-columns: 1fr;
 }
 
 .ghostButton {
@@ -272,13 +474,34 @@
 
 .cardMessage {
   line-height: 1.5;
-  color: rgba(33, 53, 43, 0.85);
+  color: var(--foreground-muted);
   overflow-wrap: anywhere;
+}
+
+.requestOptionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: auto;
 }
 
 .metaGrid {
   display: grid;
   gap: 12px;
+}
+
+.field,
+.settingsPane {
+  display: grid;
+  gap: 8px;
+}
+
+.fieldLabel {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
 }
 
 .metaGrid dt {
@@ -309,14 +532,15 @@
 
 .cover {
   object-fit: cover;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .coverFallback {
   display: grid;
   place-items: center;
   background:
-    linear-gradient(135deg, rgba(216, 109, 57, 0.18), rgba(47, 127, 121, 0.18)),
+    radial-gradient(circle at 30% 20%, rgba(243, 154, 87, 0.22), transparent 50%),
+    linear-gradient(135deg, rgba(243, 154, 87, 0.18), rgba(111, 202, 180, 0.12)),
     var(--paper-strong);
   color: var(--accent);
   font-family: var(--font-display), "Segoe UI", sans-serif;
@@ -336,34 +560,55 @@
 }
 
 .card .primaryButton,
-.card .secondaryButton {
+.card .secondaryButton,
+.card .dangerButton {
   width: 100%;
   margin-top: 4px;
 }
 
+.requestOptionGrid .primaryButton,
+.requestOptionGrid .secondaryButton {
+  margin-top: 0;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.dangerButton:disabled,
+.ghostButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+  box-shadow: none;
+}
+
 .statusRequested {
-  background: rgba(216, 109, 57, 0.16);
-  color: #9a441d;
+  background: var(--accent-soft);
+  color: #ffbb92;
 }
 
 .statusSearching {
-  background: rgba(47, 127, 121, 0.16);
-  color: #1e6560;
+  background: var(--teal-soft);
+  color: #97ebdc;
 }
 
 .statusDownloading {
-  background: rgba(82, 132, 219, 0.16);
-  color: #285aa5;
+  background: rgba(82, 132, 219, 0.18);
+  color: #9cc0ff;
 }
 
 .statusAvailable {
-  background: rgba(101, 165, 87, 0.16);
-  color: #2d6b28;
+  background: var(--success-soft);
+  color: #c7f3a6;
+}
+
+.statusNotMonitored {
+  background: rgba(165, 184, 173, 0.12);
+  color: #d1ded6;
 }
 
 .statusFailed {
-  background: rgba(187, 89, 89, 0.14);
-  color: #9d3434;
+  background: var(--danger-soft);
+  color: #ffb4a8;
 }
 
 .systemNote {
@@ -374,9 +619,73 @@
   margin-bottom: 16px;
   padding: 14px 16px;
   border-radius: 18px;
-  background: rgba(187, 89, 89, 0.12);
-  color: #8d3232;
+  background: var(--danger-soft);
+  color: var(--danger);
   font-weight: 700;
+}
+
+.successBanner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-weight: 700;
+}
+
+.deliveryPanel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top left, rgba(243, 154, 87, 0.14), transparent 58%),
+    rgba(243, 154, 87, 0.08);
+  border: 1px solid rgba(243, 154, 87, 0.2);
+}
+
+.inlineFieldGroup {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 18px;
+}
+
+.settingsPane {
+  padding: 18px;
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(243, 154, 87, 0.08), transparent 44%),
+    rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+}
+
+.profileList {
+  display: grid;
+  gap: 14px;
+}
+
+.profileCard {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top left, rgba(243, 154, 87, 0.12), transparent 56%),
+    rgba(243, 154, 87, 0.08);
+  border: 1px solid rgba(243, 154, 87, 0.16);
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .emptyState {
@@ -393,7 +702,9 @@
   display: grid;
   place-items: center;
   border-radius: 18px;
-  background: linear-gradient(135deg, rgba(216, 109, 57, 0.18), rgba(47, 127, 121, 0.18));
+  background:
+    radial-gradient(circle at 30% 25%, rgba(243, 154, 87, 0.22), transparent 50%),
+    linear-gradient(135deg, rgba(243, 154, 87, 0.18), rgba(111, 202, 180, 0.14));
   color: var(--accent);
   font-family: var(--font-display), "Segoe UI", sans-serif;
   font-size: 1.6rem;
@@ -408,9 +719,9 @@
 .skeletonLine {
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.5),
-    rgba(241, 228, 205, 0.95),
-    rgba(255, 255, 255, 0.5)
+    rgba(255, 255, 255, 0.05),
+    rgba(58, 80, 68, 0.9),
+    rgba(255, 255, 255, 0.05)
   );
   background-size: 200% 100%;
   animation: shimmer 1.4s linear infinite;
@@ -458,6 +769,14 @@
 
   .card {
     gap: 14px;
+  }
+
+  .settingsGrid,
+  .formGrid,
+  .inlineFieldGroup,
+  .actionRow,
+  .requestOptionGrid {
+    grid-template-columns: 1fr;
   }
 
   .coverLarge,
