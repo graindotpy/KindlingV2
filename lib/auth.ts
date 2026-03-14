@@ -27,6 +27,46 @@ function isProduction() {
   return process.env.NODE_ENV === "production";
 }
 
+function isSecureRequest(request: Request) {
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  if (forwardedProto) {
+    return forwardedProto.split(",")[0]?.trim().toLowerCase() === "https";
+  }
+
+  try {
+    return new URL(request.url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function getRequestOrigin(request: Request) {
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const forwardedPort = request.headers.get("x-forwarded-port")?.split(",")[0]?.trim();
+  const protocol = forwardedProto || (isSecureRequest(request) ? "https" : "http");
+  let host = forwardedHost || request.headers.get("host");
+
+  if (
+    host &&
+    forwardedPort &&
+    !host.includes(":") &&
+    !((protocol === "http" && forwardedPort === "80") || (protocol === "https" && forwardedPort === "443"))
+  ) {
+    host = `${host}:${forwardedPort}`;
+  }
+
+  if (host) {
+    return `${protocol}://${host}`;
+  }
+
+  try {
+    return new URL(request.url).origin;
+  } catch {
+    return null;
+  }
+}
+
 function compareText(left: string, right: string) {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
@@ -95,20 +135,21 @@ function sameOrigin(request: Request) {
     return true;
   }
 
-  try {
-    return origin === new URL(request.url).origin;
-  } catch {
-    return false;
-  }
+  return origin === getRequestOrigin(request);
 }
 
-function setSessionCookie(response: NextResponse, token: string, expiresAt: number) {
+function setSessionCookie(
+  response: NextResponse,
+  token: string,
+  expiresAt: number,
+  secure: boolean,
+) {
   response.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: token,
     httpOnly: true,
     sameSite: "strict",
-    secure: isProduction(),
+    secure,
     path: "/",
     expires: new Date(expiresAt),
   });
@@ -141,7 +182,7 @@ export function isAuthenticatedRequest(request: Request) {
   return Boolean(decodeSession(token, config.sessionSecret as string));
 }
 
-export function createAuthenticatedResponse() {
+export function createAuthenticatedResponse(request: Request) {
   const config = getAuthConfig();
   if (!config.configured) {
     return NextResponse.json(
@@ -160,18 +201,18 @@ export function createAuthenticatedResponse() {
     expiresAt: new Date(expiresAt).toISOString(),
   });
 
-  setSessionCookie(response, token, expiresAt);
+  setSessionCookie(response, token, expiresAt, isSecureRequest(request));
   return response;
 }
 
-export function createSignedOutResponse() {
+export function createSignedOutResponse(request: Request) {
   const response = NextResponse.json({ authenticated: false });
   response.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: "",
     httpOnly: true,
     sameSite: "strict",
-    secure: isProduction(),
+    secure: isSecureRequest(request),
     path: "/",
     expires: new Date(0),
   });

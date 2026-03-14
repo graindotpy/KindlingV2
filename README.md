@@ -40,6 +40,7 @@ SMTP_SECURE=false
 SMTP_USERNAME=your-smtp-user
 SMTP_PASSWORD=your-smtp-password
 SMTP_FROM_EMAIL=kindling@example.com
+SMTP_MAX_ATTACHMENT_BYTES=18874368
 ```
 
 7. Set the household access values before exposing Kindling anywhere beyond localhost:
@@ -157,6 +158,7 @@ npm run db:seed
 | `SMTP_USERNAME` | No | SMTP username if your server requires auth |
 | `SMTP_PASSWORD` | No | SMTP password if your server requires auth |
 | `SMTP_FROM_EMAIL` | Yes for Kindle delivery | Sender address used by Kindling |
+| `SMTP_MAX_ATTACHMENT_BYTES` | No | Safe raw-file ceiling before SMTP send. Defaults to `18874368` (18 MiB) to stay below Gmail-style message limits after attachment encoding |
 | `KINDLING_ADMIN_PASSWORD` | Yes for production | Household password used to unlock the UI and API |
 | `KINDLING_SESSION_SECRET` | Yes for production | Secret used to sign the Kindling session cookie |
 | `KINDLING_SESSION_TTL_HOURS` | No | How long the unlock session lasts. Defaults to `168` |

@@ -278,6 +278,19 @@ describe("createRequestService.createRequest", () => {
     expect(retried?.status).toBe("searching");
     expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the Readarr link when a post-add step fails", async () => {
+    const { service, ebookReadarr } = makeDeps();
+    ebookReadarr.monitorRequestedBook.mockRejectedValueOnce(
+      new ReadarrApiError("Readarr said no.", 500),
+    );
+
+    const created = await service.createRequest(1, "ebook", makeSelection());
+
+    expect(created?.status).toBe("searching");
+    expect(created?.readarrBookId).toBe(101);
+    expect(created?.readarrAuthorId).toBe(51);
+  });
 });
 
 describe("createRequestService.deleteRequest", () => {

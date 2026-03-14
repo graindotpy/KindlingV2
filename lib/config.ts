@@ -73,6 +73,13 @@ const envSchema = z.object({
   SMTP_USERNAME: optionalString,
   SMTP_PASSWORD: optionalString,
   SMTP_FROM_EMAIL: optionalString,
+  SMTP_MAX_ATTACHMENT_BYTES: z.preprocess((value) => {
+    if (value === undefined || value === null || value === "") {
+      return 18 * 1024 * 1024;
+    }
+
+    return Number(value);
+  }, z.number().int().positive()),
   KINDLING_ADMIN_PASSWORD: optionalString,
   KINDLING_SESSION_SECRET: optionalString,
   KINDLING_SESSION_TTL_HOURS: z.preprocess((value) => {
@@ -121,6 +128,7 @@ export type AppConfig = {
       username: string | null;
       password: string | null;
       fromEmail: string | null;
+      maxAttachmentBytes: number;
     };
   };
 };
@@ -170,6 +178,7 @@ export function getAppConfig(): AppConfig {
         username: parsed.SMTP_USERNAME ?? null,
         password: parsed.SMTP_PASSWORD ?? null,
         fromEmail: parsed.SMTP_FROM_EMAIL ?? null,
+        maxAttachmentBytes: parsed.SMTP_MAX_ATTACHMENT_BYTES,
       },
     },
   };

@@ -31,6 +31,7 @@ type ReadarrLookupSearchBook = Omit<ReadarrLookupBook, "author"> & {
 };
 
 const cachedDefaultsByFormat: Partial<Record<BookRequestFormat, ReadarrDefaults>> = {};
+const POST_ADD_LOOKUP_RETRY_DELAYS_MS = [250, 500, 1_000];
 
 export class ReadarrApiError extends Error {
   status: number;
@@ -222,6 +223,10 @@ function selectMatchingAuthor(authors: ReadarrAuthor[], authorName: string) {
   );
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function pickBestCoverUrl(resource: {
   remoteCover?: string | null;
   remotePoster?: string | null;
@@ -372,6 +377,26 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
 
     const books = await getBooksByAuthor(authorId);
     return pickMatchingBook(books, selection);
+  }
+
+  async function findExistingBookForSelectionWithRetries(
+    selection: ReadarrLookupBook,
+    authorId: number,
+  ) {
+    const immediate = await findExistingBookForSelection(selection, authorId);
+    if (immediate) {
+      return immediate;
+    }
+
+    for (const delayMs of POST_ADD_LOOKUP_RETRY_DELAYS_MS) {
+      await wait(delayMs);
+      const retryMatch = await findExistingBookForSelection(selection, authorId);
+      if (retryMatch) {
+        return retryMatch;
+      }
+    }
+
+    return null;
   }
 
   const service = {
@@ -526,6 +551,8 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
         authorId,
         monitored: true,
         anyEditionOk: selection.anyEditionOk ?? true,
+        // Older Readarr builds null-deref if /api/v1/book receives a missing editions array.
+        editions: selection.editions ?? [],
         author: {
           ...selection.author,
           ...author,
@@ -546,7 +573,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
           body: JSON.stringify(payload),
         });
       } catch (error) {
-        const fallbackBook = await findExistingBookForSelection(selection, authorId);
+        const fallbackBook = await findExistingBookForSelectionWithRetries(selection, authorId);
         if (fallbackBook) {
           return fallbackBook;
         }

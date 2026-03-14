@@ -140,3 +140,149 @@ describe("createReadarrService.searchBooks", () => {
     expect(results[0]?.author.authorName).toBe("Christopher Buehlman");
   });
 });
+
+describe("createReadarrService.addBookForRequest", () => {
+  beforeEach(() => {
+    process.env.READARR_BASE_URL = "http://localhost:8787";
+    process.env.READARR_API_KEY = "test-api-key";
+    resetAppConfigCache();
+    vi.restoreAllMocks();
+  });
+
+  it("recovers when Readarr partially creates a book before returning a 500", async () => {
+    vi.useFakeTimers();
+
+    const selection = {
+      id: 0,
+      title: "A Game of Thrones",
+      foreignBookId: "goodreads:13496",
+      foreignEditionId: "edition:1",
+      releaseDate: "1996-08-06T00:00:00.000Z",
+      author: {
+        id: 51,
+        authorName: "George R.R. Martin",
+        foreignAuthorId: "goodreads-author:346732",
+      },
+      editions: [{ id: 81, monitored: true, isEbook: true }],
+      statistics: { bookFileCount: 0 },
+    };
+
+    const createdBook = {
+      ...selection,
+      id: 1466917,
+      monitored: true,
+    };
+
+    let authorBooksLookups = 0;
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = input.toString();
+
+      if (url.endsWith("/api/v1/rootfolder")) {
+        return jsonResponse([
+          {
+            path: "/books",
+            defaultQualityProfileId: 1,
+            defaultMetadataProfileId: 2,
+          },
+        ]);
+      }
+
+      if (url.endsWith("/api/v1/qualityprofile")) {
+        return jsonResponse([{ id: 1 }]);
+      }
+
+      if (url.endsWith("/api/v1/metadataprofile")) {
+        return jsonResponse([{ id: 2 }]);
+      }
+
+      if (url.includes("/api/v1/book?authorId=51")) {
+        authorBooksLookups += 1;
+        return jsonResponse(authorBooksLookups >= 3 ? [createdBook] : []);
+      }
+
+      if (url.endsWith("/api/v1/book") && init?.method === "POST") {
+        return new Response(JSON.stringify({ message: "Readarr blew up after create." }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = createReadarrService().addBookForRequest(selection as never);
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(result.id).toBe(1466917);
+    expect(authorBooksLookups).toBe(3);
+    vi.useRealTimers();
+  });
+
+  it("normalizes missing editions before posting a new book to Readarr", async () => {
+    const selection = {
+      id: 0,
+      title: "A Game of Thrones",
+      foreignBookId: "goodreads:13496",
+      foreignEditionId: "edition:1",
+      releaseDate: "1996-08-06T00:00:00.000Z",
+      author: {
+        id: 51,
+        authorName: "George R.R. Martin",
+        foreignAuthorId: "goodreads-author:346732",
+      },
+      statistics: { bookFileCount: 0 },
+    };
+
+    let postedBody: unknown = null;
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = input.toString();
+
+      if (url.endsWith("/api/v1/rootfolder")) {
+        return jsonResponse([
+          {
+            path: "/books",
+            defaultQualityProfileId: 1,
+            defaultMetadataProfileId: 2,
+          },
+        ]);
+      }
+
+      if (url.endsWith("/api/v1/qualityprofile")) {
+        return jsonResponse([{ id: 1 }]);
+      }
+
+      if (url.endsWith("/api/v1/metadataprofile")) {
+        return jsonResponse([{ id: 2 }]);
+      }
+
+      if (url.includes("/api/v1/book?authorId=51")) {
+        return jsonResponse([]);
+      }
+
+      if (url.endsWith("/api/v1/book") && init?.method === "POST") {
+        postedBody = JSON.parse(String(init.body));
+        return jsonResponse({
+          ...selection,
+          id: 101,
+          monitored: true,
+          editions: [],
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createReadarrService().addBookForRequest(selection as never);
+
+    expect(result.id).toBe(101);
+    expect(postedBody).toMatchObject({
+      title: "A Game of Thrones",
+      editions: [],
+    });
+  });
+});

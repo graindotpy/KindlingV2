@@ -275,6 +275,25 @@ function buildDraftRequestPatch(draft: CreateBookRequestInput) {
   };
 }
 
+function buildLinkedReadarrPatch(
+  current: BookRequestRecord,
+  book: ReadarrLookupBook,
+  updatedAt: string,
+  extra: Partial<BookRequestRecord> = {},
+) {
+  return {
+    foreignAuthorId: book.author.foreignAuthorId ?? current.foreignAuthorId,
+    foreignBookId: book.foreignBookId ?? current.foreignBookId,
+    foreignEditionId: book.foreignEditionId ?? current.foreignEditionId,
+    readarrAuthorId: book.author.id ?? current.readarrAuthorId,
+    readarrBookId: book.id ?? current.readarrBookId,
+    readarrEditionId: pickPreferredEditionId(book) ?? current.readarrEditionId,
+    coverUrl: pickBestCoverUrl(book) ?? current.coverUrl,
+    updatedAt,
+    ...extra,
+  };
+}
+
 function buildDeleteRequestStatusMessage(options: {
   deletedExistingFile: boolean;
   hadReadarrBook: boolean;
@@ -758,7 +777,18 @@ export function createRequestService(
           throw new Error("Readarr returned the book without an id.");
         }
 
-        await readarr.monitorRequestedBook(book.id);
+        const linkedRequest =
+          deps.requestsRepo.update(
+            created.id,
+            buildLinkedReadarrPatch(created, book, deps.now()),
+          ) ?? created;
+
+        try {
+          await readarr.monitorRequestedBook(book.id);
+        } catch {
+          // Readarr already received the book add, so keep the local request linked
+          // and continue with the best-effort search/status steps below.
+        }
 
         let fallbackStatus: {
           status: "requested" | "searching";
@@ -815,18 +845,13 @@ export function createRequestService(
             updatedAt: deps.now(),
           });
         } catch {
-          return deps.requestsRepo.update(created.id, {
-            status: fallbackStatus.status,
-            statusMessage: fallbackStatus.message,
-            foreignAuthorId: book.author.foreignAuthorId ?? created.foreignAuthorId,
-            foreignBookId: book.foreignBookId ?? created.foreignBookId,
-            foreignEditionId: book.foreignEditionId ?? created.foreignEditionId,
-            readarrAuthorId: book.author.id ?? created.readarrAuthorId,
-            readarrBookId: book.id ?? created.readarrBookId,
-            readarrEditionId: pickPreferredEditionId(book) ?? created.readarrEditionId,
-            coverUrl: pickBestCoverUrl(book) ?? created.coverUrl,
-            updatedAt: deps.now(),
-          });
+          return deps.requestsRepo.update(
+            linkedRequest.id,
+            buildLinkedReadarrPatch(linkedRequest, book, deps.now(), {
+              status: fallbackStatus.status,
+              statusMessage: fallbackStatus.message,
+            }),
+          );
         }
       } catch (error) {
         return deps.requestsRepo.update(created.id, {

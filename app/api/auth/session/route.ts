@@ -47,9 +47,9 @@ export async function POST(request: Request) {
     );
   }
 
-  return createAuthenticatedResponse();
+  return createAuthenticatedResponse(request);
 }
 
-export async function DELETE() {
-  return createSignedOutResponse();
+export async function DELETE(request: Request) {
+  return createSignedOutResponse(request);
 }

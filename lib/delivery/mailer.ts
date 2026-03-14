@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import nodemailer, { type Transporter } from "nodemailer";
 import { getAppConfig, isSmtpConfigured } from "@/lib/config";
@@ -23,6 +24,23 @@ export interface KindleMailer {
 type CreateSmtpMailerDependencies = {
   transporter?: Transporter;
 };
+
+function formatBinarySize(bytes: number) {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${bytes} bytes`;
+}
+
+function isGoogleSmtpHost(host: string | null) {
+  const normalized = host?.trim().toLowerCase() ?? "";
+  return normalized.includes("gmail") || normalized.includes("google");
+}
 
 function getTransporter(config: ReturnType<typeof getAppConfig>) {
   const { host, port, secure, username, password } = config.delivery.smtp;
@@ -83,9 +101,28 @@ export function createSmtpMailer(
         throw new Error("SMTP is not configured yet for Kindle delivery.");
       }
 
-      const fromEmail = config.delivery.smtp.fromEmail;
+      const {
+        fromEmail,
+        host,
+        maxAttachmentBytes,
+      } = config.delivery.smtp;
       if (!fromEmail) {
         throw new Error("SMTP from email is missing.");
+      }
+
+      const attachmentStats = await fs.stat(input.filePath);
+      if (!attachmentStats.isFile()) {
+        throw new Error("Kindling found the matched path, but it is not a file.");
+      }
+
+      if (attachmentStats.size > maxAttachmentBytes) {
+        const providerGuidance = isGoogleSmtpHost(host)
+          ? " Gmail rejects oversized SMTP messages once attachment encoding overhead is added."
+          : " Many SMTP servers reject oversized messages once attachment encoding overhead is added.";
+
+        throw new Error(
+          `"${path.basename(input.filePath)}" is ${formatBinarySize(attachmentStats.size)}, which is over the safe email attachment limit of ${formatBinarySize(maxAttachmentBytes)}.${providerGuidance} Use a smaller EPUB or raise SMTP_MAX_ATTACHMENT_BYTES if your SMTP provider supports larger messages.`,
+        );
       }
 
       await transporter.sendMail({

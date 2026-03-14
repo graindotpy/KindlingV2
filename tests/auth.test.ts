@@ -3,7 +3,7 @@ import { createAuthenticatedResponse, requireApiSession } from "@/lib/auth";
 import { resetAppConfigCache } from "@/lib/config";
 
 function getSessionCookie() {
-  const response = createAuthenticatedResponse();
+  const response = createAuthenticatedResponse(new Request("http://localhost/api/auth/session"));
   return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
 }
 
@@ -52,5 +52,22 @@ describe("requireApiSession", () => {
     const response = requireApiSession(request, { mutation: true });
 
     expect(response?.status).toBe(403);
+  });
+
+  it("accepts same-site mutation requests behind a forwarded host", () => {
+    const request = new Request("http://kindling-web:3000/api/requests", {
+      method: "POST",
+      headers: {
+        cookie: getSessionCookie(),
+        origin: "http://192.168.4.148:3000",
+        host: "kindling-web:3000",
+        "x-forwarded-host": "192.168.4.148:3000",
+        "x-forwarded-proto": "http",
+      },
+    });
+
+    const response = requireApiSession(request, { mutation: true });
+
+    expect(response).toBeNull();
   });
 });
