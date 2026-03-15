@@ -1,4 +1,5 @@
 import { getAppConfig } from "@/lib/config";
+import { createBookRequestsRepository } from "@/lib/db/repositories/book-requests";
 import { createSettingsRepository } from "@/lib/db/repositories/settings";
 import type { DeliveryWorkerStatus } from "@/lib/delivery/types";
 
@@ -43,25 +44,26 @@ export function recordWorkerError(timestamp: string, message: string) {
 
 export function getBackgroundWorkerStatus(): DeliveryWorkerStatus {
   const watchDirectory = getSettingValue(WATCH_DIRECTORY_KEY);
+  const hasPendingSearchRetries = createBookRequestsRepository().hasPendingSearchRetries();
   const lastStartedAt = getSettingValue(WORKER_LAST_STARTED_AT_KEY);
   const lastHeartbeatAt = getSettingValue(WORKER_LAST_HEARTBEAT_AT_KEY);
   const lastSuccessAt = getSettingValue(WORKER_LAST_SUCCESS_AT_KEY);
   const lastErrorAt = getSettingValue(WORKER_LAST_ERROR_AT_KEY);
   const lastErrorMessage = getSettingValue(WORKER_LAST_ERROR_MESSAGE_KEY);
-  const expected = Boolean(watchDirectory?.trim());
+  const expected = Boolean(watchDirectory?.trim()) || hasPendingSearchRetries;
   const lastHeartbeatMs = lastHeartbeatAt ? new Date(lastHeartbeatAt).getTime() : NaN;
   const running =
     Number.isFinite(lastHeartbeatMs) &&
     Date.now() - lastHeartbeatMs <= getWorkerFreshnessWindowMs();
 
-  let message = "Automatic delivery is idle until a watched folder is configured.";
+  let message = "Background work is idle until automatic delivery or queued search retries need it.";
 
   if (expected && running) {
-    message = "Automatic delivery worker is running.";
+    message = "Background worker is running.";
   } else if (expected && lastErrorAt && lastErrorMessage) {
-    message = `Automatic delivery worker is failing: ${lastErrorMessage}`;
+    message = `Background worker is failing: ${lastErrorMessage}`;
   } else if (expected) {
-    message = "Automatic delivery worker is not reporting in. Start `npm run worker`.";
+    message = "Background worker is not reporting in. Start `npm run worker`.";
   }
 
   return {

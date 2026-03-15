@@ -31,17 +31,13 @@ import type {
 } from "@/lib/requests/types";
 
 const REQUEST_FORMATS: BookRequestFormat[] = ["ebook", "audiobook"];
-const POST_ADD_SEARCH_RETRY_DELAYS_MS = [500, 1_500, 3_000];
+const AUTOMATIC_SEARCH_DELAY_MS = 60_000;
+const AUTOMATIC_SEARCH_MAX_ATTEMPTS = 4;
 
 type RequestsRepository = ReturnType<typeof createBookRequestsRepository>;
 type UsersRepository = ReturnType<typeof createUsersRepository>;
 type ReadarrServices = Record<BookRequestFormat, ReadarrService>;
 type ReadarrBookStatus = Awaited<ReturnType<ReadarrService["getBookStatus"]>>;
-type SearchKickoffResult = {
-  confirmed: boolean;
-  liveStatus: ReadarrBookStatus | null;
-  triggerAccepted: boolean;
-};
 
 type RequestServiceDependencies = {
   requestsRepo: RequestsRepository;
@@ -49,6 +45,8 @@ type RequestServiceDependencies = {
   readarr: ReadarrServices;
   now: () => string;
   syncIntervalMs: number;
+  searchRetryDelayMs: number;
+  maxSearchAttempts: number;
 };
 
 type PartialRequestServiceDependencies = Omit<
@@ -73,6 +71,10 @@ function getFormatNoun(format: BookRequestFormat) {
 
 function getAuthorName(result: ReadarrLookupBook) {
   return result.author?.authorName?.trim() || null;
+}
+
+function getPersistedReadarrId(value: number | null | undefined) {
+  return typeof value === "number" && value > 0 ? value : null;
 }
 
 function hasSearchResultIdentity(result: ReadarrLookupBook) {
@@ -126,28 +128,6 @@ function buildAvailabilityCopy(
             : "Ask Kindling to send this to Readarr.",
       };
   }
-}
-
-function getFriendlyErrorMessage(error: unknown, format: BookRequestFormat) {
-  if (error instanceof ReadarrApiError) {
-    if (error.status === 503) {
-      return format === "audiobook"
-        ? "The audiobook Readarr is not configured yet on this computer."
-        : "Readarr is not configured yet on this computer.";
-    }
-
-    if (error.status >= 500) {
-      return "Readarr had trouble handling that request. Your request was still saved here.";
-    }
-
-    return error.message;
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return "Something unexpected went wrong, but your request is still saved here.";
 }
 
 function buildUnavailableCopy(
@@ -242,11 +222,15 @@ function buildDraftRequest(
     foreignAuthorId: selection.author.foreignAuthorId ?? null,
     foreignBookId: selection.foreignBookId ?? null,
     foreignEditionId: selection.foreignEditionId ?? null,
-    readarrAuthorId: selection.author.id ?? null,
-    readarrBookId: selection.id ?? null,
+    readarrAuthorId: getPersistedReadarrId(selection.author.id),
+    readarrBookId: getPersistedReadarrId(selection.id),
     readarrEditionId: pickPreferredEditionId(selection),
     coverUrl: pickBestCoverUrl(selection),
     notes: null,
+    searchAttemptCount: 0,
+    nextSearchAttemptAt: null,
+    lastSearchAttemptAt: null,
+    lastSearchErrorMessage: null,
     lastSyncedAt: null,
     matchedFilePath: null,
     matchedAt: null,
@@ -277,6 +261,10 @@ function buildDraftRequestPatch(draft: CreateBookRequestInput) {
     readarrEditionId: draft.readarrEditionId,
     coverUrl: draft.coverUrl,
     notes: draft.notes,
+    searchAttemptCount: draft.searchAttemptCount,
+    nextSearchAttemptAt: draft.nextSearchAttemptAt,
+    lastSearchAttemptAt: draft.lastSearchAttemptAt,
+    lastSearchErrorMessage: draft.lastSearchErrorMessage,
     lastSyncedAt: draft.lastSyncedAt,
     updatedAt: draft.updatedAt,
   };
@@ -296,6 +284,10 @@ function buildLinkedReadarrPatch(
     readarrBookId: book.id ?? current.readarrBookId,
     readarrEditionId: pickPreferredEditionId(book) ?? current.readarrEditionId,
     coverUrl: pickBestCoverUrl(book) ?? current.coverUrl,
+    searchAttemptCount: current.searchAttemptCount,
+    nextSearchAttemptAt: current.nextSearchAttemptAt,
+    lastSearchAttemptAt: current.lastSearchAttemptAt,
+    lastSearchErrorMessage: current.lastSearchErrorMessage,
     updatedAt,
     ...extra,
   };
@@ -321,8 +313,119 @@ function buildDeleteRequestStatusMessage(options: {
   return "This request was reset to Not Monitored.";
 }
 
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function getInitialSearchQueueMessage(format: BookRequestFormat) {
+  return format === "audiobook"
+    ? "Your audiobook request has been saved. Kindling will try automatic search in about 1 minute."
+    : "Your request has been saved. Kindling will try automatic search in about 1 minute.";
+}
+
+function getRetryScheduledMessage(format: BookRequestFormat) {
+  return format === "audiobook"
+    ? "Automatic audiobook search could not be confirmed yet. Kindling will retry in about 1 minute."
+    : "Automatic search could not be confirmed yet. Kindling will retry in about 1 minute.";
+}
+
+function getAutomaticSearchFailedMessage(format: BookRequestFormat) {
+  return format === "audiobook"
+    ? "Kindling could not confirm an automatic audiobook search after repeated retries."
+    : "Kindling could not confirm an automatic search after repeated retries.";
+}
+
+function getAutomaticSearchErrorMessage(error: unknown, format: BookRequestFormat) {
+  if (error instanceof ReadarrApiError) {
+    if (error.status === 503) {
+      return format === "audiobook"
+        ? "The audiobook Readarr is not configured yet on this computer."
+        : "Readarr is not configured yet on this computer.";
+    }
+
+    return error.message;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return format === "audiobook"
+    ? "Kindling could not confirm automatic audiobook searching yet."
+    : "Kindling could not confirm automatic searching yet.";
+}
+
+function addMilliseconds(timestamp: string, milliseconds: number) {
+  return new Date(new Date(timestamp).getTime() + milliseconds).toISOString();
+}
+
+function normalizeLookupText(value: string | null | undefined) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+}
+
+function clearSearchRetryState() {
+  return {
+    searchAttemptCount: 0,
+    nextSearchAttemptAt: null,
+    lastSearchAttemptAt: null,
+    lastSearchErrorMessage: null,
+  };
+}
+
+function buildQueuedSearchRetryPatch(
+  format: BookRequestFormat,
+  timestamp: string,
+  delayMs: number,
+  attemptCount: number,
+  lastErrorMessage: string | null,
+) {
+  return {
+    status: "requested" as const,
+    statusMessage:
+      attemptCount === 0
+        ? getInitialSearchQueueMessage(format)
+        : getRetryScheduledMessage(format),
+    searchAttemptCount: attemptCount,
+    nextSearchAttemptAt: addMilliseconds(timestamp, delayMs),
+    lastSearchAttemptAt: attemptCount > 0 ? timestamp : null,
+    lastSearchErrorMessage: lastErrorMessage,
+    notes: null,
+    updatedAt: timestamp,
+  };
+}
+
+function buildFailedSearchRetryPatch(
+  format: BookRequestFormat,
+  timestamp: string,
+  lastErrorMessage: string | null,
+) {
+  return {
+    status: "failed" as const,
+    statusMessage: getAutomaticSearchFailedMessage(format),
+    notes: lastErrorMessage
+      ? `Last automatic search error: ${lastErrorMessage}`
+      : "Automatic search could not be confirmed after repeated retries.",
+    ...clearSearchRetryState(),
+    updatedAt: timestamp,
+  };
+}
+
+function matchesRequestSelection(
+  request: BookRequestRecord,
+  result: ReadarrLookupBook,
+) {
+  if (buildFingerprintFromLookupBook(result) === request.requestFingerprint) {
+    return true;
+  }
+
+  if (request.foreignBookId && result.foreignBookId === request.foreignBookId) {
+    return true;
+  }
+
+  if (request.foreignEditionId && result.foreignEditionId === request.foreignEditionId) {
+    return true;
+  }
+
+  return (
+    normalizeLookupText(result.title) === normalizeLookupText(request.requestedTitle) &&
+    normalizeLookupText(getAuthorName(result)) === normalizeLookupText(request.requestedAuthor)
+  );
 }
 
 function hasActiveQueueItem(status: ReadarrBookStatus) {
@@ -335,65 +438,6 @@ function hasConfirmedSearchActivity(status: ReadarrBookStatus) {
     hasActiveQueueItem(status) ||
     Boolean(status.book.lastSearchTime)
   );
-}
-
-async function startAutomaticSearchWithRetries(
-  readarr: ReadarrService,
-  bookId: number,
-): Promise<SearchKickoffResult> {
-  let liveStatus: ReadarrBookStatus | null = null;
-
-  try {
-    liveStatus = await readarr.getBookStatus(bookId);
-    if ((liveStatus.book.statistics?.bookFileCount ?? 0) > 0 || hasActiveQueueItem(liveStatus)) {
-      return {
-        confirmed: true,
-        liveStatus,
-        triggerAccepted: false,
-      };
-    }
-  } catch {
-    // Ignore status reads here and fall back to best-effort search retries below.
-  }
-
-  let triggerAccepted = false;
-  let lastTriggerError: unknown = null;
-
-  for (const delayMs of [0, ...POST_ADD_SEARCH_RETRY_DELAYS_MS]) {
-    if (delayMs > 0) {
-      await wait(delayMs);
-    }
-
-    try {
-      await readarr.triggerBookSearch(bookId);
-      triggerAccepted = true;
-    } catch (error) {
-      lastTriggerError = error;
-    }
-
-    try {
-      liveStatus = await readarr.getBookStatus(bookId);
-      if (hasConfirmedSearchActivity(liveStatus)) {
-        return {
-          confirmed: true,
-          liveStatus,
-          triggerAccepted,
-        };
-      }
-    } catch {
-      // Ignore transient status fetch issues and continue retrying the search command.
-    }
-  }
-
-  if (!triggerAccepted && lastTriggerError) {
-    throw lastTriggerError;
-  }
-
-  return {
-    confirmed: false,
-    liveStatus,
-    triggerAccepted,
-  };
 }
 
 function buildRequestLookup(records: BookRequestRecord[]) {
@@ -498,10 +542,228 @@ export function createRequestService(
     },
     now: partialDeps.now ?? (() => new Date().toISOString()),
     syncIntervalMs: partialDeps.syncIntervalMs ?? config.syncIntervalMs,
+    searchRetryDelayMs: partialDeps.searchRetryDelayMs ?? AUTOMATIC_SEARCH_DELAY_MS,
+    maxSearchAttempts: partialDeps.maxSearchAttempts ?? AUTOMATIC_SEARCH_MAX_ATTEMPTS,
   };
 
   function getReadarrForFormat(format: BookRequestFormat) {
     return deps.readarr[format];
+  }
+
+  function clearSearchRetryStatePatch(updatedAt: string) {
+    return {
+      ...clearSearchRetryState(),
+      updatedAt,
+    };
+  }
+
+  function queueSearchRetry(
+    request: BookRequestRecord,
+    options: {
+      timestamp?: string;
+      attemptCount: number;
+      lastErrorMessage?: string | null;
+    },
+  ) {
+    const timestamp = options.timestamp ?? deps.now();
+    return (
+      deps.requestsRepo.update(
+        request.id,
+        buildQueuedSearchRetryPatch(
+          request.requestFormat,
+          timestamp,
+          deps.searchRetryDelayMs,
+          options.attemptCount,
+          options.lastErrorMessage ?? null,
+        ),
+      ) ?? request
+    );
+  }
+
+  function failQueuedSearchRetry(
+    request: BookRequestRecord,
+    options: {
+      timestamp?: string;
+      lastErrorMessage?: string | null;
+    },
+  ) {
+    const timestamp = options.timestamp ?? deps.now();
+    return (
+      deps.requestsRepo.update(
+        request.id,
+        buildFailedSearchRetryPatch(
+          request.requestFormat,
+          timestamp,
+          options.lastErrorMessage ?? null,
+        ),
+      ) ?? request
+    );
+  }
+
+  async function findLookupBookForRequest(request: BookRequestRecord) {
+    const readarr = getReadarrForFormat(request.requestFormat);
+    const query = `${request.requestedTitle} ${request.requestedAuthor}`.trim();
+    if (!query) {
+      return null;
+    }
+
+    const results = await readarr.searchBooks(query);
+    return results.find((result) => matchesRequestSelection(request, result)) ?? null;
+  }
+
+  function clearStaleReadarrLink(request: BookRequestRecord, updatedAt: string) {
+    return (
+      deps.requestsRepo.update(request.id, {
+        readarrBookId: null,
+        readarrEditionId: null,
+        lastSyncedAt: updatedAt,
+        updatedAt,
+      }) ?? request
+    );
+  }
+
+  function mapConfirmedSearchStatus(
+    request: BookRequestRecord,
+    liveStatus: ReadarrBookStatus,
+    updatedAt: string,
+  ) {
+    const mapped = mapReadarrBookToFriendlyStatus(liveStatus.book, liveStatus.queueItems, "searching");
+
+    return (
+      deps.requestsRepo.update(request.id, {
+        status: mapped.status,
+        statusMessage: mapped.message,
+        foreignAuthorId: liveStatus.book.author.foreignAuthorId ?? request.foreignAuthorId,
+        foreignBookId: liveStatus.book.foreignBookId ?? request.foreignBookId,
+        foreignEditionId: liveStatus.book.foreignEditionId ?? request.foreignEditionId,
+        readarrAuthorId: liveStatus.book.author.id ?? request.readarrAuthorId,
+        readarrBookId: liveStatus.book.id ?? request.readarrBookId,
+        readarrEditionId: pickPreferredEditionId(liveStatus.book) ?? request.readarrEditionId,
+        coverUrl: pickBestCoverUrl(liveStatus.book) ?? request.coverUrl,
+        notes: null,
+        lastSyncedAt: updatedAt,
+        ...clearSearchRetryStatePatch(updatedAt),
+      }) ?? request
+    );
+  }
+
+  async function ensureLinkedBookForRetry(request: BookRequestRecord, timestamp: string) {
+    const readarr = getReadarrForFormat(request.requestFormat);
+    const selection = await findLookupBookForRequest(request);
+
+    if (!selection) {
+      throw new Error(
+        request.requestFormat === "audiobook"
+          ? "Kindling could not find this audiobook in Readarr yet."
+          : "Kindling could not find this book in Readarr yet.",
+      );
+    }
+
+    const book = await readarr.addBookForRequest(selection);
+
+    if (!book.id) {
+      throw new Error("Readarr returned the book without an id.");
+    }
+
+    const linked =
+      deps.requestsRepo.update(
+        request.id,
+        buildLinkedReadarrPatch(request, book, timestamp, {
+          lastSyncedAt: timestamp,
+        }),
+      ) ?? request;
+
+    try {
+      await readarr.monitorRequestedBook(book.id);
+    } catch {
+      // Readarr already has the book; retry cycles can still reconcile and trigger search.
+    }
+
+    return linked;
+  }
+
+  async function processQueuedSearchRetry(request: BookRequestRecord) {
+    const readarr = getReadarrForFormat(request.requestFormat);
+    const startedAt = deps.now();
+    let current = request;
+
+    if (current.readarrBookId) {
+      try {
+        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
+        if (hasConfirmedSearchActivity(liveStatus)) {
+          return mapConfirmedSearchStatus(current, liveStatus, startedAt);
+        }
+      } catch (error) {
+        if (error instanceof ReadarrApiError && error.status === 404) {
+          current = clearStaleReadarrLink(current, startedAt);
+        }
+      }
+    }
+
+    const attemptCount = current.searchAttemptCount + 1;
+    let lastErrorMessage: string | null = null;
+
+    try {
+      if (!current.readarrBookId) {
+        current = await ensureLinkedBookForRetry(current, startedAt);
+      }
+
+      if (!current.readarrBookId) {
+        throw new Error("Kindling could not link this request to Readarr yet.");
+      }
+
+      try {
+        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
+        if (hasConfirmedSearchActivity(liveStatus)) {
+          return mapConfirmedSearchStatus(current, liveStatus, startedAt);
+        }
+      } catch (error) {
+        if (error instanceof ReadarrApiError && error.status === 404) {
+          current = clearStaleReadarrLink(current, startedAt);
+          current = await ensureLinkedBookForRetry(current, startedAt);
+        } else {
+          lastErrorMessage = getAutomaticSearchErrorMessage(error, current.requestFormat);
+        }
+      }
+
+      if (!current.readarrBookId) {
+        throw new Error("Kindling could not link this request to Readarr yet.");
+      }
+
+      try {
+        await readarr.triggerBookSearch(current.readarrBookId);
+      } catch (error) {
+        lastErrorMessage = getAutomaticSearchErrorMessage(error, current.requestFormat);
+      }
+
+      try {
+        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
+        if (hasConfirmedSearchActivity(liveStatus)) {
+          return mapConfirmedSearchStatus(current, liveStatus, startedAt);
+        }
+      } catch (error) {
+        if (error instanceof ReadarrApiError && error.status === 404) {
+          current = clearStaleReadarrLink(current, startedAt);
+        } else if (!lastErrorMessage) {
+          lastErrorMessage = getAutomaticSearchErrorMessage(error, current.requestFormat);
+        }
+      }
+    } catch (error) {
+      lastErrorMessage = getAutomaticSearchErrorMessage(error, current.requestFormat);
+    }
+
+    if (attemptCount >= deps.maxSearchAttempts) {
+      return failQueuedSearchRetry(current, {
+        timestamp: startedAt,
+        lastErrorMessage,
+      });
+    }
+
+    return queueSearchRetry(current, {
+      timestamp: startedAt,
+      attemptCount,
+      lastErrorMessage,
+    });
   }
 
   function updateRequestAsNotMonitored(
@@ -518,6 +780,7 @@ export function createRequestService(
       readarrBookId: options.readarrBookMissing ? null : record.readarrBookId,
       readarrEditionId: options.readarrBookMissing ? null : record.readarrEditionId,
       notes: null,
+      ...clearSearchRetryState(),
       lastSyncedAt: timestamp,
       matchedFilePath: null,
       matchedAt: null,
@@ -552,6 +815,7 @@ export function createRequestService(
         });
       }
 
+      const updatedAt = deps.now();
       return deps.requestsRepo.update(record.id, {
         status: mapped.status,
         statusMessage: mapped.message,
@@ -559,7 +823,10 @@ export function createRequestService(
         readarrAuthorId: book.author.id ?? record.readarrAuthorId,
         readarrBookId: book.id ?? record.readarrBookId,
         readarrEditionId: pickPreferredEditionId(book) ?? record.readarrEditionId,
-        lastSyncedAt: deps.now(),
+        notes: mapped.status === "failed" ? record.notes : null,
+        ...(mapped.status === "requested" ? {} : clearSearchRetryState()),
+        lastSyncedAt: updatedAt,
+        updatedAt,
       });
     } catch (error) {
       if (error instanceof ReadarrApiError && error.status === 404) {
@@ -588,6 +855,7 @@ export function createRequestService(
         request.readarrBookId &&
         readarr.isConfigured() &&
         isActiveStatus(request.status) &&
+        !request.nextSearchAttemptAt &&
         Number.isFinite(lastTouched) &&
         lastTouched < staleBefore
       ) {
@@ -862,108 +1130,37 @@ export function createRequestService(
         const linkedRequest =
           deps.requestsRepo.update(
             created.id,
-            buildLinkedReadarrPatch(created, book, deps.now()),
+            buildLinkedReadarrPatch(created, book, deps.now(), {
+              lastSyncedAt: deps.now(),
+            }),
           ) ?? created;
 
         try {
           await readarr.monitorRequestedBook(book.id);
         } catch {
-          // Readarr already received the book add, so keep the local request linked
-          // and continue with the best-effort search/status steps below.
+          // Readarr already received the book add, so keep the local request linked.
         }
 
-        let searchKickoff: SearchKickoffResult | null = null;
-        let fallbackStatus: {
-          status: "requested" | "searching";
-          message: string;
-        } = {
-          status: "requested",
-          message:
-            requestFormat === "audiobook"
-              ? "Your audiobook request has been saved."
-              : "Your request has been saved.",
-        };
-
-        try {
-          searchKickoff = await startAutomaticSearchWithRetries(readarr, book.id);
-          fallbackStatus = searchKickoff.confirmed
-            ? {
-                status: "searching",
-                message:
-                  requestFormat === "audiobook"
-                    ? "The audiobook Readarr is searching for this title now."
-                    : "Readarr is searching for this book now.",
-              }
-            : searchKickoff.triggerAccepted
-              ? {
-                  status: "requested",
-                  message:
-                    requestFormat === "audiobook"
-                      ? "Saved to the audiobook Readarr, but automatic searching could not be confirmed yet."
-                      : "Saved to Readarr, but automatic searching could not be confirmed yet.",
-                }
-              : {
-                  status: "requested",
-                  message:
-                    requestFormat === "audiobook"
-                      ? "Saved to the audiobook Readarr, but automatic searching could not be started."
-                      : "Saved to Readarr, but automatic searching could not be started.",
-                };
-        } catch {
-          fallbackStatus = {
-            status: "requested",
-            message:
-              requestFormat === "audiobook"
-                ? "Saved to the audiobook Readarr, but automatic searching could not be started."
-                : "Saved to Readarr, but automatic searching could not be started.",
-          };
-        }
-
-        try {
-          const { book: liveBook, queueItems } =
-            searchKickoff?.liveStatus ?? (await readarr.getBookStatus(book.id));
-          const mapped = mapReadarrBookToFriendlyStatus(
-            liveBook,
-            queueItems,
-            fallbackStatus.status,
-          );
-          const status = mapped.status === "not-monitored" ? fallbackStatus.status : mapped.status;
-          const statusMessage =
-            mapped.status === "not-monitored" ||
-            (mapped.status === "requested" && fallbackStatus.status === "requested")
-              ? fallbackStatus.message
-              : mapped.message;
-
-          return deps.requestsRepo.update(created.id, {
-            status,
-            statusMessage,
-            foreignAuthorId: liveBook.author.foreignAuthorId ?? created.foreignAuthorId,
-            foreignBookId: liveBook.foreignBookId ?? created.foreignBookId,
-            foreignEditionId: liveBook.foreignEditionId ?? created.foreignEditionId,
-            readarrAuthorId: liveBook.author.id ?? created.readarrAuthorId,
-            readarrBookId: liveBook.id ?? created.readarrBookId,
-            readarrEditionId: pickPreferredEditionId(liveBook) ?? created.readarrEditionId,
-            coverUrl: pickBestCoverUrl(liveBook) ?? created.coverUrl,
-            lastSyncedAt: deps.now(),
-            updatedAt: deps.now(),
-          });
-        } catch {
-          return deps.requestsRepo.update(
-            linkedRequest.id,
-            buildLinkedReadarrPatch(linkedRequest, book, deps.now(), {
-              status: fallbackStatus.status,
-              statusMessage: fallbackStatus.message,
-            }),
-          );
-        }
+        return queueSearchRetry(linkedRequest, {
+          attemptCount: 0,
+        });
       } catch (error) {
-        return deps.requestsRepo.update(created.id, {
-          status: "failed",
-          statusMessage: getFriendlyErrorMessage(error, requestFormat),
-          notes: "The request intent was saved locally even though Readarr could not finish it.",
-          updatedAt: deps.now(),
+        return queueSearchRetry(created, {
+          attemptCount: 0,
+          lastErrorMessage: getAutomaticSearchErrorMessage(error, requestFormat),
         });
       }
+    },
+
+    async runAutomaticSearchRetryCycle() {
+      const dueRequests = deps.requestsRepo.listPendingSearchRetries(deps.now());
+      const updates: BookRequestRecord[] = [];
+
+      for (const request of dueRequests) {
+        updates.push(await processQueuedSearchRetry(request));
+      }
+
+      return updates;
     },
 
     async syncRequest(requestId: number) {

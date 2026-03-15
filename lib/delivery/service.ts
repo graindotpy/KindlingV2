@@ -109,6 +109,10 @@ export function createDeliveryService(
       matchedAt: request.matchedAt ?? timestamp,
       status: "available" as const,
       statusMessage: message,
+      searchAttemptCount: 0,
+      nextSearchAttemptAt: null,
+      lastSearchAttemptAt: null,
+      lastSearchErrorMessage: null,
       updatedAt: timestamp,
     };
 

@@ -6,6 +6,14 @@ import type { BookRequestFormat, BookRequestRecord } from "@/lib/requests/types"
 
 const FIXED_TIME = "2026-03-13T12:00:00.000Z";
 const MATCHED_FILE_PATH = "C:\\Library\\Mary Norton\\The Borrowers.epub";
+type MockBookStatus = {
+  book: ReadarrLookupBook;
+  queueItems: Array<{ id: number; bookId?: number | null; errorMessage?: string | null }>;
+};
+
+function addMilliseconds(timestamp: string, milliseconds: number) {
+  return new Date(new Date(timestamp).getTime() + milliseconds).toISOString();
+}
 
 function makeSelection(): ReadarrLookupBook {
   return {
@@ -24,8 +32,41 @@ function makeSelection(): ReadarrLookupBook {
   };
 }
 
+function makeTrackedReadarrBook(overrides: Partial<ReadarrLookupBook> = {}): ReadarrLookupBook {
+  const selection = makeSelection();
+  const { author: authorOverrides = {}, statistics: statisticsOverrides = {}, ...rest } = overrides;
+
+  return {
+    ...selection,
+    id: 101,
+    monitored: true,
+    lastSearchTime: null,
+    ...rest,
+    author: {
+      ...selection.author,
+      id: 51,
+      ...authorOverrides,
+    },
+    statistics: {
+      bookFileCount: 0,
+      ...statisticsOverrides,
+    },
+  };
+}
+
+function makeBookStatus(
+  bookOverrides: Partial<ReadarrLookupBook> = {},
+  queueItems: Array<{ id: number; bookId?: number | null; errorMessage?: string | null }> = [],
+): MockBookStatus {
+  return {
+    book: makeTrackedReadarrBook(bookOverrides),
+    queueItems,
+  };
+}
+
 function makeDeps() {
   let nextId = 1;
+  let currentNow = FIXED_TIME;
   const requests: BookRequestRecord[] = [];
 
   function seedRequest(overrides: Partial<BookRequestRecord> = {}) {
@@ -50,6 +91,10 @@ function makeDeps() {
       readarrEditionId: 81,
       coverUrl: null,
       notes: null,
+      searchAttemptCount: 0,
+      nextSearchAttemptAt: null,
+      lastSearchAttemptAt: null,
+      lastSearchErrorMessage: null,
       lastSyncedAt: null,
       matchedFilePath: null,
       matchedAt: null,
@@ -69,6 +114,24 @@ function makeDeps() {
   const requestsRepo = {
     listAll: vi.fn(() => [...requests]),
     listByUser: vi.fn((userId: number) => requests.filter((request) => request.userId === userId)),
+    hasPendingSearchRetries: vi.fn(() =>
+      requests.some(
+        (request) =>
+          request.status === "requested" && Boolean(request.nextSearchAttemptAt),
+      ),
+    ),
+    listPendingSearchRetries: vi.fn((cutoff: string) =>
+      requests
+        .filter(
+          (request) =>
+            request.status === "requested" &&
+            Boolean(request.nextSearchAttemptAt) &&
+            request.nextSearchAttemptAt! <= cutoff,
+        )
+        .sort((left, right) =>
+          (left.nextSearchAttemptAt ?? "").localeCompare(right.nextSearchAttemptAt ?? ""),
+        ),
+    ),
     findById: vi.fn(
       (requestId: number) => requests.find((request) => request.id === requestId) ?? null,
     ),
@@ -114,6 +177,10 @@ function makeDeps() {
         readarrEditionId: input.readarrEditionId,
         coverUrl: input.coverUrl,
         notes: input.notes,
+        searchAttemptCount: input.searchAttemptCount,
+        nextSearchAttemptAt: input.nextSearchAttemptAt,
+        lastSearchAttemptAt: input.lastSearchAttemptAt,
+        lastSearchErrorMessage: input.lastSearchErrorMessage,
         lastSyncedAt: input.lastSyncedAt,
         matchedFilePath: input.matchedFilePath,
         matchedAt: input.matchedAt,
@@ -174,7 +241,9 @@ function makeDeps() {
       monitorRequestedBook: vi.fn(async () => [readarrBook]),
       unmonitorRequestedBook: vi.fn(async () => [readarrBook]),
       triggerBookSearch: vi.fn(async () => ({ id: 1 })),
-      getBookStatus: vi.fn(async () => ({ book: readarrBook, queueItems: [] })),
+      getBookStatus: vi.fn<(bookId: number) => Promise<MockBookStatus>>(
+        async () => ({ book: readarrBook, queueItems: [] }),
+      ),
       getBookFiles: vi.fn<(bookId: number) => Promise<ReadarrBookFile[]>>(async () => []),
       deleteBookFile: vi.fn<(bookFileId: number) => Promise<null>>(async () => null),
     };
@@ -195,23 +264,31 @@ function makeDeps() {
         ebook: ebookReadarr as never,
         audiobook: audiobookReadarr as never,
       },
-      now: () => FIXED_TIME,
+      now: () => currentNow,
       syncIntervalMs: 60_000,
+      searchRetryDelayMs: 60_000,
+      maxSearchAttempts: 4,
     }),
+    setNow(timestamp: string) {
+      currentNow = timestamp;
+    },
   };
 }
 
 describe("createRequestService.createRequest", () => {
-  it("creates an ebook request and marks it as searching when Readarr starts the search", async () => {
+  it("queues an ebook request for background automatic search after linking it in Readarr", async () => {
     const { service, ebookReadarr } = makeDeps();
 
     const created = await service.createRequest(1, "ebook", makeSelection());
 
-    expect(created?.status).toBe("searching");
+    expect(created?.status).toBe("requested");
+    expect(created?.statusMessage).toContain("automatic search in about 1 minute");
     expect(created?.requestFormat).toBe("ebook");
     expect(created?.readarrBookId).toBe(101);
+    expect(created?.searchAttemptCount).toBe(0);
+    expect(created?.nextSearchAttemptAt).toBe(addMilliseconds(FIXED_TIME, 60_000));
     expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(1);
-    expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(1);
+    expect(ebookReadarr.triggerBookSearch).not.toHaveBeenCalled();
   });
 
   it("deduplicates the same user's request for the same format before calling Readarr again", async () => {
@@ -237,7 +314,7 @@ describe("createRequestService.createRequest", () => {
     expect(audiobookReadarr.addBookForRequest).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the failed intent locally if Readarr rejects the request", async () => {
+  it("keeps the request queued if Readarr rejects the add", async () => {
     const { service, ebookReadarr } = makeDeps();
     ebookReadarr.addBookForRequest.mockRejectedValueOnce(
       new ReadarrApiError("Readarr said no.", 500),
@@ -245,23 +322,35 @@ describe("createRequestService.createRequest", () => {
 
     const created = await service.createRequest(1, "ebook", makeSelection());
 
-    expect(created?.status).toBe("failed");
-    expect(created?.statusMessage).toContain("saved here");
+    expect(created?.status).toBe("requested");
+    expect(created?.statusMessage).toContain("automatic search in about 1 minute");
+    expect(created?.readarrBookId).toBeNull();
+    expect(created?.searchAttemptCount).toBe(0);
+    expect(created?.lastSearchErrorMessage).toBe("Readarr said no.");
   });
 
-  it("retries a failed request instead of treating it as permanently requested", async () => {
-    const { service, ebookReadarr } = makeDeps();
-    ebookReadarr.addBookForRequest.mockRejectedValueOnce(
-      new ReadarrApiError("Readarr said no.", 500),
-    );
+  it("requeues a failed request when the same user asks again", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    const failed = seedRequest({
+      status: "failed",
+      statusMessage: "Kindling could not confirm an automatic search after repeated retries.",
+      readarrAuthorId: null,
+      readarrBookId: null,
+      searchAttemptCount: 0,
+      nextSearchAttemptAt: null,
+      lastSearchAttemptAt: FIXED_TIME,
+      lastSearchErrorMessage: "Readarr said no.",
+      notes: "Last automatic search error: Readarr said no.",
+    });
 
-    const failed = await service.createRequest(1, "ebook", makeSelection());
     const retried = await service.createRequest(1, "ebook", makeSelection());
 
-    expect(failed?.status).toBe("failed");
     expect(retried?.id).toBe(failed?.id);
-    expect(retried?.status).toBe("searching");
-    expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(2);
+    expect(retried?.status).toBe("requested");
+    expect(retried?.statusMessage).toContain("automatic search in about 1 minute");
+    expect(retried?.searchAttemptCount).toBe(0);
+    expect(retried?.nextSearchAttemptAt).toBe(addMilliseconds(FIXED_TIME, 60_000));
+    expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(1);
   });
 
   it("lets a not monitored request be requested again later", async () => {
@@ -275,7 +364,8 @@ describe("createRequestService.createRequest", () => {
     const retried = await service.createRequest(1, "ebook", makeSelection());
 
     expect(retried?.id).toBe(previous.id);
-    expect(retried?.status).toBe("searching");
+    expect(retried?.status).toBe("requested");
+    expect(retried?.statusMessage).toContain("automatic search in about 1 minute");
     expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -287,87 +377,150 @@ describe("createRequestService.createRequest", () => {
 
     const created = await service.createRequest(1, "ebook", makeSelection());
 
-    expect(created?.status).toBe("searching");
+    expect(created?.status).toBe("requested");
     expect(created?.readarrBookId).toBe(101);
     expect(created?.readarrAuthorId).toBe(51);
+    expect(ebookReadarr.triggerBookSearch).not.toHaveBeenCalled();
+  });
+});
+
+describe("createRequestService.runAutomaticSearchRetryCycle", () => {
+  it("confirms search on the first due retry and clears retry metadata", async () => {
+    const { service, ebookReadarr, setNow } = makeDeps();
+    const created = await service.createRequest(1, "ebook", makeSelection());
+    const dueAt = created?.nextSearchAttemptAt;
+
+    if (!dueAt) {
+      throw new Error("Expected a queued retry timestamp.");
+    }
+
+    ebookReadarr.getBookStatus
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus({ lastSearchTime: dueAt }));
+
+    setNow(dueAt);
+    const [updated] = await service.runAutomaticSearchRetryCycle();
+
+    expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledWith(101);
+    expect(updated?.status).toBe("searching");
+    expect(updated?.statusMessage).toContain("still searching");
+    expect(updated?.searchAttemptCount).toBe(0);
+    expect(updated?.nextSearchAttemptAt).toBeNull();
+    expect(updated?.lastSearchAttemptAt).toBeNull();
+    expect(updated?.lastSearchErrorMessage).toBeNull();
   });
 
-  it("retries automatic search when Readarr does not show it right away", async () => {
-    vi.useFakeTimers();
+  it("reschedules the retry when search cannot be confirmed yet", async () => {
+    const { service, ebookReadarr, setNow } = makeDeps();
+    const created = await service.createRequest(1, "ebook", makeSelection());
+    const dueAt = created?.nextSearchAttemptAt;
 
-    try {
-      const { service, ebookReadarr } = makeDeps();
-      const idleStatus = {
-        book: {
-          ...makeSelection(),
-          id: 101,
-          monitored: true,
-          author: {
-            ...makeSelection().author,
-            id: 51,
-          },
-          lastSearchTime: null,
-          statistics: { bookFileCount: 0 },
-        },
-        queueItems: [],
-      };
-      const searchingStatus = {
-        book: {
-          ...idleStatus.book,
-          lastSearchTime: FIXED_TIME,
-        },
-        queueItems: [],
-      };
+    if (!dueAt) {
+      throw new Error("Expected a queued retry timestamp.");
+    }
+
+    ebookReadarr.getBookStatus
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus());
+
+    setNow(dueAt);
+    const [updated] = await service.runAutomaticSearchRetryCycle();
+
+    expect(updated?.status).toBe("requested");
+    expect(updated?.statusMessage).toContain("retry in about 1 minute");
+    expect(updated?.searchAttemptCount).toBe(1);
+    expect(updated?.lastSearchAttemptAt).toBe(dueAt);
+    expect(updated?.nextSearchAttemptAt).toBe(addMilliseconds(dueAt, 60_000));
+    expect(updated?.lastSearchErrorMessage).toBeNull();
+    expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the request failed after four unconfirmed attempts", async () => {
+    const { service, ebookReadarr, setNow } = makeDeps();
+    let current = await service.createRequest(1, "ebook", makeSelection());
+
+    for (let index = 0; index < 4; index += 1) {
+      const dueAt = current?.nextSearchAttemptAt;
+      if (!dueAt) {
+        throw new Error("Expected a queued retry timestamp.");
+      }
 
       ebookReadarr.getBookStatus
-        .mockResolvedValueOnce(idleStatus)
-        .mockResolvedValueOnce(idleStatus)
-        .mockResolvedValueOnce(searchingStatus);
+        .mockResolvedValueOnce(makeBookStatus())
+        .mockResolvedValueOnce(makeBookStatus())
+        .mockResolvedValueOnce(makeBookStatus());
 
-      const pending = service.createRequest(1, "ebook", makeSelection());
-      await vi.runAllTimersAsync();
-      const created = await pending;
-
-      expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(2);
-      expect(created?.status).toBe("searching");
-      expect(created?.statusMessage).toContain("searching");
-    } finally {
-      vi.useRealTimers();
+      setNow(dueAt);
+      [current] = await service.runAutomaticSearchRetryCycle();
     }
+
+    expect(current?.status).toBe("failed");
+    expect(current?.statusMessage).toContain("after repeated retries");
+    expect(current?.searchAttemptCount).toBe(0);
+    expect(current?.nextSearchAttemptAt).toBeNull();
+    expect(current?.lastSearchAttemptAt).toBeNull();
+    expect(current?.lastSearchErrorMessage).toBeNull();
+    expect(current?.notes).toContain("Automatic search could not be confirmed");
+    expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(4);
   });
 
-  it("keeps the request as requested when automatic search cannot be confirmed yet", async () => {
-    vi.useFakeTimers();
+  it("relinks a queued request after an add failure and then starts searching", async () => {
+    const { service, ebookReadarr, setNow } = makeDeps();
+    ebookReadarr.addBookForRequest.mockRejectedValueOnce(
+      new ReadarrApiError("Readarr said no.", 500),
+    );
 
-    try {
-      const { service, ebookReadarr } = makeDeps();
-      const idleStatus = {
-        book: {
-          ...makeSelection(),
-          id: 101,
-          monitored: true,
-          author: {
-            ...makeSelection().author,
-            id: 51,
-          },
-          lastSearchTime: null,
-          statistics: { bookFileCount: 0 },
-        },
-        queueItems: [],
-      };
+    const created = await service.createRequest(1, "ebook", makeSelection());
+    const dueAt = created?.nextSearchAttemptAt;
 
-      ebookReadarr.getBookStatus.mockResolvedValue(idleStatus);
-
-      const pending = service.createRequest(1, "ebook", makeSelection());
-      await vi.runAllTimersAsync();
-      const created = await pending;
-
-      expect(ebookReadarr.triggerBookSearch).toHaveBeenCalledTimes(4);
-      expect(created?.status).toBe("requested");
-      expect(created?.statusMessage).toContain("could not be confirmed yet");
-    } finally {
-      vi.useRealTimers();
+    if (!dueAt) {
+      throw new Error("Expected a queued retry timestamp.");
     }
+
+    ebookReadarr.searchBooks.mockResolvedValueOnce([makeSelection()]);
+    ebookReadarr.getBookStatus
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus({ lastSearchTime: dueAt }));
+
+    setNow(dueAt);
+    const [updated] = await service.runAutomaticSearchRetryCycle();
+
+    expect(ebookReadarr.searchBooks).toHaveBeenCalledWith("The Borrowers Mary Norton");
+    expect(ebookReadarr.addBookForRequest).toHaveBeenCalledTimes(2);
+    expect(updated?.status).toBe("searching");
+    expect(updated?.readarrBookId).toBe(101);
+    expect(updated?.searchAttemptCount).toBe(0);
+    expect(updated?.nextSearchAttemptAt).toBeNull();
+    expect(updated?.lastSearchErrorMessage).toBeNull();
+  });
+
+  it("relinks after a stale Readarr book id returns 404 during the retry cycle", async () => {
+    const { service, ebookReadarr, seedRequest, setNow } = makeDeps();
+    const queued = seedRequest({
+      status: "requested",
+      statusMessage: "Automatic search could not be confirmed yet. Kindling will retry in about 1 minute.",
+      readarrBookId: 999,
+      readarrAuthorId: 51,
+      searchAttemptCount: 1,
+      nextSearchAttemptAt: addMilliseconds(FIXED_TIME, 60_000),
+      lastSearchAttemptAt: FIXED_TIME,
+    });
+
+    ebookReadarr.getBookStatus
+      .mockRejectedValueOnce(new ReadarrApiError("Missing from Readarr.", 404))
+      .mockResolvedValueOnce(makeBookStatus())
+      .mockResolvedValueOnce(makeBookStatus({ lastSearchTime: addMilliseconds(FIXED_TIME, 60_000) }));
+    ebookReadarr.searchBooks.mockResolvedValueOnce([makeSelection()]);
+
+    setNow(queued.nextSearchAttemptAt ?? addMilliseconds(FIXED_TIME, 60_000));
+    const [updated] = await service.runAutomaticSearchRetryCycle();
+
+    expect(updated?.status).toBe("searching");
+    expect(updated?.readarrBookId).toBe(101);
+    expect(updated?.lastSearchErrorMessage).toBeNull();
+    expect(ebookReadarr.searchBooks).toHaveBeenCalledTimes(1);
   });
 });
 

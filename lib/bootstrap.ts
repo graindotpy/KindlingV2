@@ -1,6 +1,7 @@
 import { getAppConfig } from "@/lib/config";
 import { initializeDatabase } from "@/lib/db/client";
 import { createDeliveryService } from "@/lib/delivery/service";
+import { createRequestService } from "@/lib/requests/service";
 import {
   recordWorkerError,
   recordWorkerHeartbeat,
@@ -56,13 +57,32 @@ export function startBackgroundWorker() {
     recordWorkerHeartbeat(startedAt);
 
     try {
-      await createDeliveryService().runAutomaticWatchCycle();
-      recordWorkerSuccess(new Date().toISOString());
-    } catch (error) {
-      recordWorkerError(
-        new Date().toISOString(),
-        error instanceof Error ? error.message : "Automatic delivery worker failed.",
-      );
+      const failures: string[] = [];
+
+      try {
+        await createRequestService().runAutomaticSearchRetryCycle();
+      } catch (error) {
+        failures.push(
+          error instanceof Error ? error.message : "Automatic search retry cycle failed.",
+        );
+      }
+
+      try {
+        await createDeliveryService().runAutomaticWatchCycle();
+      } catch (error) {
+        failures.push(
+          error instanceof Error ? error.message : "Automatic delivery cycle failed.",
+        );
+      }
+
+      if (failures.length > 0) {
+        recordWorkerError(
+          new Date().toISOString(),
+          failures.join(" | "),
+        );
+      } else {
+        recordWorkerSuccess(new Date().toISOString());
+      }
     } finally {
       state.running = false;
     }

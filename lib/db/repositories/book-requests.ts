@@ -26,6 +26,10 @@ type BookRequestRow = {
   readarr_edition_id: number | null;
   cover_url: string | null;
   notes: string | null;
+  search_attempt_count: number;
+  next_search_attempt_at: string | null;
+  last_search_attempt_at: string | null;
+  last_search_error_message: string | null;
   last_synced_at: string | null;
   matched_file_path: string | null;
   matched_at: string | null;
@@ -55,6 +59,10 @@ export type CreateBookRequestInput = {
   readarrEditionId: number | null;
   coverUrl: string | null;
   notes: string | null;
+  searchAttemptCount: number;
+  nextSearchAttemptAt: string | null;
+  lastSearchAttemptAt: string | null;
+  lastSearchErrorMessage: string | null;
   lastSyncedAt: string | null;
   matchedFilePath: string | null;
   matchedAt: string | null;
@@ -93,6 +101,10 @@ function mapBookRequest(row: BookRequestRow): BookRequestRecord {
     readarrEditionId: row.readarr_edition_id,
     coverUrl: row.cover_url,
     notes: row.notes,
+    searchAttemptCount: row.search_attempt_count,
+    nextSearchAttemptAt: row.next_search_attempt_at,
+    lastSearchAttemptAt: row.last_search_attempt_at,
+    lastSearchErrorMessage: row.last_search_error_message,
     lastSyncedAt: row.last_synced_at,
     matchedFilePath: row.matched_file_path,
     matchedAt: row.matched_at,
@@ -131,6 +143,10 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       book_requests.readarr_edition_id,
       book_requests.cover_url,
       book_requests.notes,
+      book_requests.search_attempt_count,
+      book_requests.next_search_attempt_at,
+      book_requests.last_search_attempt_at,
+      book_requests.last_search_error_message,
       book_requests.last_synced_at,
       book_requests.matched_file_path,
       book_requests.matched_at,
@@ -151,6 +167,20 @@ export function createBookRequestsRepository(database: Database.Database = getDb
     `${selectBase} ORDER BY book_requests.requested_at DESC, book_requests.id DESC`,
   );
   const getByIdStatement = database.prepare(`${selectBase} WHERE book_requests.id = ?`);
+  const listPendingSearchRetriesStatement = database.prepare(
+    `${selectBase}
+     WHERE book_requests.status = 'requested'
+     AND book_requests.next_search_attempt_at IS NOT NULL
+     AND book_requests.next_search_attempt_at <= ?
+     ORDER BY book_requests.next_search_attempt_at ASC, book_requests.requested_at ASC, book_requests.id ASC`,
+  );
+  const hasPendingSearchRetriesStatement = database.prepare(
+    `SELECT 1
+     FROM book_requests
+     WHERE status = 'requested'
+     AND next_search_attempt_at IS NOT NULL
+     LIMIT 1`,
+  );
   const getByUserAndFingerprintStatement = database.prepare(
     `${selectBase}
      WHERE book_requests.user_id = ?
@@ -176,6 +206,10 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       readarr_edition_id,
       cover_url,
       notes,
+      search_attempt_count,
+      next_search_attempt_at,
+      last_search_attempt_at,
+      last_search_error_message,
       last_synced_at,
       matched_file_path,
       matched_at,
@@ -185,7 +219,7 @@ export function createBookRequestsRepository(database: Database.Database = getDb
       last_delivery_message,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertStatusHistoryStatement = database.prepare(`
     INSERT INTO status_history (
@@ -230,6 +264,16 @@ export function createBookRequestsRepository(database: Database.Database = getDb
     },
 
     findById,
+
+    hasPendingSearchRetries() {
+      return Boolean(hasPendingSearchRetriesStatement.get());
+    },
+
+    listPendingSearchRetries(cutoff: string) {
+      return listPendingSearchRetriesStatement
+        .all(cutoff)
+        .map((row) => mapBookRequest(row as BookRequestRow));
+    },
 
     findByUserAndFingerprint(
       userId: number,
@@ -298,6 +342,10 @@ export function createBookRequestsRepository(database: Database.Database = getDb
         input.readarrEditionId,
         input.coverUrl,
         input.notes,
+        input.searchAttemptCount,
+        input.nextSearchAttemptAt,
+        input.lastSearchAttemptAt,
+        input.lastSearchErrorMessage,
         input.lastSyncedAt,
         input.matchedFilePath,
         input.matchedAt,
@@ -343,6 +391,10 @@ export function createBookRequestsRepository(database: Database.Database = getDb
         ["readarr_edition_id", patch.readarrEditionId],
         ["cover_url", patch.coverUrl],
         ["notes", patch.notes],
+        ["search_attempt_count", patch.searchAttemptCount],
+        ["next_search_attempt_at", patch.nextSearchAttemptAt],
+        ["last_search_attempt_at", patch.lastSearchAttemptAt],
+        ["last_search_error_message", patch.lastSearchErrorMessage],
         ["last_synced_at", patch.lastSyncedAt],
         ["matched_file_path", patch.matchedFilePath],
         ["matched_at", patch.matchedAt],

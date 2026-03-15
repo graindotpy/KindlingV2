@@ -19,7 +19,7 @@ export async function GET() {
     lastSuccessAt: null,
     lastErrorAt: null,
     lastErrorMessage: null,
-    message: "Automatic delivery worker status is unavailable because the database is not ready.",
+    message: "Background worker status is unavailable because the database is not ready.",
   };
 
   try {

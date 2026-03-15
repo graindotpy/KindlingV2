@@ -48,6 +48,10 @@ export type BookRequestRecord = {
   readarrEditionId: number | null;
   coverUrl: string | null;
   notes: string | null;
+  searchAttemptCount: number;
+  nextSearchAttemptAt: string | null;
+  lastSearchAttemptAt: string | null;
+  lastSearchErrorMessage: string | null;
   lastSyncedAt: string | null;
   matchedFilePath: string | null;
   matchedAt: string | null;
