@@ -90,6 +90,7 @@ Set all required values in the UI for both services, especially:
 
 - `KINDLING_ADMIN_PASSWORD`
 - `KINDLING_SESSION_SECRET`
+- `KINDLING_TRUSTED_ORIGINS=https://kindling.grainserver.co.uk` if a reverse proxy or Cloudflare Access rewrites the incoming host/protocol
 - `READARR_BASE_URL`, `READARR_API_KEY`
 - `AUDIOBOOK_READARR_BASE_URL`, `AUDIOBOOK_READARR_API_KEY` (if used)
 - SMTP variables (if using Kindle email delivery)
@@ -161,6 +162,7 @@ npm run db:seed
 | `SMTP_MAX_ATTACHMENT_BYTES` | No | Safe raw-file ceiling before SMTP send. Defaults to `18874368` (18 MiB) to stay below Gmail-style message limits after attachment encoding |
 | `KINDLING_ADMIN_PASSWORD` | Yes for production | Household password used to unlock the UI and API |
 | `KINDLING_SESSION_SECRET` | Yes for production | Secret used to sign the Kindling session cookie |
+| `KINDLING_TRUSTED_ORIGINS` | No | Comma- or whitespace-separated list of public origins to trust for same-site API mutations when a reverse proxy rewrites the backend host or protocol |
 | `KINDLING_SESSION_TTL_HOURS` | No | How long the unlock session lasts. Defaults to `168` |
 | `KINDLING_EMBEDDED_WORKER` | No | Enables the old in-process worker for local development only. Defaults to `false` |
 | `DELIVERY_SCAN_INTERVAL_SECONDS` | No | How often the watched folder is rescanned |

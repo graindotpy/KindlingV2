@@ -82,6 +82,7 @@ const envSchema = z.object({
   }, z.number().int().positive()),
   KINDLING_ADMIN_PASSWORD: optionalString,
   KINDLING_SESSION_SECRET: optionalString,
+  KINDLING_TRUSTED_ORIGINS: optionalString,
   KINDLING_SESSION_TTL_HOURS: z.preprocess((value) => {
     if (value === undefined || value === null || value === "") {
       return 168;
@@ -114,6 +115,7 @@ export type AppConfig = {
   auth: {
     password: string | null;
     sessionSecret: string | null;
+    trustedOrigins: string[];
     sessionTtlMs: number;
   };
   worker: {
@@ -134,6 +136,29 @@ export type AppConfig = {
 };
 
 let cachedConfig: AppConfig | null = null;
+
+function normalizeOriginList(value: string | undefined) {
+  if (!value) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .map((entry) => {
+          try {
+            return new URL(entry).origin;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is string => Boolean(entry)),
+    ),
+  );
+}
 
 export function getAppConfig(): AppConfig {
   if (cachedConfig) {
@@ -164,6 +189,7 @@ export function getAppConfig(): AppConfig {
     auth: {
       password: parsed.KINDLING_ADMIN_PASSWORD ?? null,
       sessionSecret: parsed.KINDLING_SESSION_SECRET ?? null,
+      trustedOrigins: normalizeOriginList(parsed.KINDLING_TRUSTED_ORIGINS),
       sessionTtlMs: parsed.KINDLING_SESSION_TTL_HOURS * 60 * 60 * 1000,
     },
     worker: {

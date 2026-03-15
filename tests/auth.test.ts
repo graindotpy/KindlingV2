@@ -17,6 +17,7 @@ describe("requireApiSession", () => {
   afterEach(() => {
     delete process.env.KINDLING_ADMIN_PASSWORD;
     delete process.env.KINDLING_SESSION_SECRET;
+    delete process.env.KINDLING_TRUSTED_ORIGINS;
     resetAppConfigCache();
   });
 
@@ -69,5 +70,70 @@ describe("requireApiSession", () => {
     const response = requireApiSession(request, { mutation: true });
 
     expect(response).toBeNull();
+  });
+
+  it("accepts same-site mutation requests when the proxy keeps the public host but drops the proto", () => {
+    const request = new Request("http://kindling-web:3000/api/requests", {
+      method: "POST",
+      headers: {
+        cookie: getSessionCookie(),
+        origin: "https://kindling.grainserver.co.uk",
+        host: "kindling.grainserver.co.uk",
+      },
+    });
+
+    const response = requireApiSession(request, { mutation: true });
+
+    expect(response).toBeNull();
+  });
+
+  it("accepts trusted public origins when a proxy rewrites the backend host", () => {
+    process.env.KINDLING_TRUSTED_ORIGINS = "https://kindling.grainserver.co.uk";
+    resetAppConfigCache();
+
+    const request = new Request("http://kindling-web:3000/api/requests", {
+      method: "POST",
+      headers: {
+        cookie: getSessionCookie(),
+        origin: "https://kindling.grainserver.co.uk",
+        host: "kindling-web:3000",
+      },
+    });
+
+    const response = requireApiSession(request, { mutation: true });
+
+    expect(response).toBeNull();
+  });
+});
+
+describe("createAuthenticatedResponse", () => {
+  beforeEach(() => {
+    process.env.KINDLING_ADMIN_PASSWORD = "open-sesame";
+    process.env.KINDLING_SESSION_SECRET = "session-secret";
+    resetAppConfigCache();
+  });
+
+  afterEach(() => {
+    delete process.env.KINDLING_ADMIN_PASSWORD;
+    delete process.env.KINDLING_SESSION_SECRET;
+    delete process.env.KINDLING_TRUSTED_ORIGINS;
+    resetAppConfigCache();
+  });
+
+  it("marks the session cookie as secure for trusted https origins", () => {
+    process.env.KINDLING_TRUSTED_ORIGINS = "https://kindling.grainserver.co.uk";
+    resetAppConfigCache();
+
+    const response = createAuthenticatedResponse(
+      new Request("http://kindling-web:3000/api/auth/session", {
+        method: "POST",
+        headers: {
+          origin: "https://kindling.grainserver.co.uk",
+          host: "kindling-web:3000",
+        },
+      }),
+    );
+
+    expect(response.headers.get("set-cookie")).toContain("Secure");
   });
 });

@@ -18,6 +18,7 @@ function getAuthConfig() {
   return {
     password: config.auth.password,
     sessionSecret: config.auth.sessionSecret,
+    trustedOrigins: config.auth.trustedOrigins,
     sessionTtlMs: config.auth.sessionTtlMs,
     configured: Boolean(config.auth.password && config.auth.sessionSecret),
   };
@@ -27,25 +28,162 @@ function isProduction() {
   return process.env.NODE_ENV === "production";
 }
 
-function isSecureRequest(request: Request) {
-  const forwardedProto = request.headers.get("x-forwarded-proto");
-  if (forwardedProto) {
-    return forwardedProto.split(",")[0]?.trim().toLowerCase() === "https";
+function normalizeOrigin(value: string | null) {
+  if (!value) {
+    return null;
   }
 
   try {
-    return new URL(request.url).protocol === "https:";
+    return new URL(value).origin;
   } catch {
-    return false;
+    return null;
   }
 }
 
+function getFirstHeaderValue(value: string | null) {
+  const firstValue = value?.split(",")[0]?.trim();
+  return firstValue ? firstValue : null;
+}
+
+function parseForwardedHeader(request: Request) {
+  const header = request.headers.get("forwarded");
+  const firstEntry = getFirstHeaderValue(header);
+  if (!firstEntry) {
+    return {
+      host: null,
+      protocol: null,
+    };
+  }
+
+  let host: string | null = null;
+  let protocol: string | null = null;
+
+  for (const part of firstEntry.split(";")) {
+    const [rawKey, rawValue] = part.split("=", 2);
+    const key = rawKey?.trim().toLowerCase();
+    const value = rawValue?.trim().replace(/^"|"$/g, "") ?? null;
+
+    if (!key || !value) {
+      continue;
+    }
+
+    if (key === "host") {
+      host = value;
+    }
+
+    if (key === "proto") {
+      const normalizedValue = value.toLowerCase();
+      if (normalizedValue === "http" || normalizedValue === "https") {
+        protocol = normalizedValue;
+      }
+    }
+  }
+
+  return {
+    host,
+    protocol,
+  };
+}
+
+function parseCloudflareVisitorProtocol(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as { scheme?: string };
+    const scheme = parsed.scheme?.trim().toLowerCase();
+    return scheme === "http" || scheme === "https" ? scheme : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHost(value: string, protocol: "http" | "https") {
+  try {
+    return new URL(`${protocol}://${value}`).host.toLowerCase();
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
+function getRequestOriginHeader(request: Request) {
+  return normalizeOrigin(request.headers.get("origin"));
+}
+
+function isTrustedOrigin(origin: string) {
+  return getAuthConfig().trustedOrigins.includes(origin);
+}
+
+function getRequestProtocol(request: Request) {
+  const forwarded = parseForwardedHeader(request);
+  const forwardedProto = getFirstHeaderValue(request.headers.get("x-forwarded-proto"));
+  const forwardedScheme = getFirstHeaderValue(request.headers.get("x-forwarded-scheme"));
+  const urlScheme = getFirstHeaderValue(request.headers.get("x-url-scheme"));
+  const frontEndHttps = request.headers.get("front-end-https")?.trim().toLowerCase();
+  const forwardedSsl = request.headers.get("x-forwarded-ssl")?.trim().toLowerCase();
+  const cloudflareVisitor = parseCloudflareVisitorProtocol(request.headers.get("cf-visitor"));
+  const host = getFirstHeaderValue(request.headers.get("x-forwarded-host")) ??
+    forwarded.host ??
+    request.headers.get("host");
+  const requestOrigin = getRequestOriginHeader(request);
+
+  if (forwardedProto) {
+    return forwardedProto.toLowerCase();
+  }
+
+  if (forwardedScheme) {
+    return forwardedScheme.toLowerCase();
+  }
+
+  if (urlScheme) {
+    return urlScheme.toLowerCase();
+  }
+
+  if (frontEndHttps === "on") {
+    return "https";
+  }
+
+  if (forwardedSsl === "on") {
+    return "https";
+  }
+
+  if (forwarded.protocol) {
+    return forwarded.protocol;
+  }
+
+  if (cloudflareVisitor) {
+    return cloudflareVisitor;
+  }
+
+  if (requestOrigin) {
+    const requestOriginUrl = new URL(requestOrigin);
+    if (host && normalizeHost(host, "https") === requestOriginUrl.host.toLowerCase()) {
+      return requestOriginUrl.protocol === "https:" ? "https" : "http";
+    }
+
+    if (isTrustedOrigin(requestOrigin)) {
+      return requestOriginUrl.protocol === "https:" ? "https" : "http";
+    }
+  }
+
+  try {
+    return new URL(request.url).protocol === "https:" ? "https" : "http";
+  } catch {
+    return "http";
+  }
+}
+
+function isSecureRequest(request: Request) {
+  return getRequestProtocol(request) === "https";
+}
+
 function getRequestOrigin(request: Request) {
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-  const forwardedPort = request.headers.get("x-forwarded-port")?.split(",")[0]?.trim();
-  const protocol = forwardedProto || (isSecureRequest(request) ? "https" : "http");
-  let host = forwardedHost || request.headers.get("host");
+  const forwarded = parseForwardedHeader(request);
+  const forwardedHost = getFirstHeaderValue(request.headers.get("x-forwarded-host")) ?? forwarded.host;
+  const forwardedPort = getFirstHeaderValue(request.headers.get("x-forwarded-port"));
+  const protocol = getRequestProtocol(request);
+  let host = forwardedHost ?? request.headers.get("host");
 
   if (
     host &&
@@ -57,14 +195,10 @@ function getRequestOrigin(request: Request) {
   }
 
   if (host) {
-    return `${protocol}://${host}`;
+    return normalizeOrigin(`${protocol}://${host}`);
   }
 
-  try {
-    return new URL(request.url).origin;
-  } catch {
-    return null;
-  }
+  return normalizeOrigin(request.url);
 }
 
 function compareText(left: string, right: string) {
@@ -130,8 +264,12 @@ function readCookieValue(request: Request, key: string) {
 }
 
 function sameOrigin(request: Request) {
-  const origin = request.headers.get("origin");
+  const origin = getRequestOriginHeader(request);
   if (!origin) {
+    return true;
+  }
+
+  if (isTrustedOrigin(origin)) {
     return true;
   }
 
