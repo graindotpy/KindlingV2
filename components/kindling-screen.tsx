@@ -152,9 +152,13 @@ function EmptyState(props: {
   );
 }
 
-function SkeletonCards() {
+function SkeletonCards(props: { household?: boolean }) {
+  const gridClassName = props.household
+    ? `${styles.cardGrid} ${styles.householdCardGrid}`
+    : styles.cardGrid;
+
   return (
-    <div className={styles.cardGrid}>
+    <div className={gridClassName}>
       {Array.from({ length: 3 }).map((_, index) => (
         <div key={index} className={`${styles.card} ${styles.skeletonCard}`}>
           <div className={styles.skeletonCover} />
@@ -1001,7 +1005,7 @@ export function KindlingScreen({
                     ? `${selectedUser?.name}'s requests`
                     : screen === "request"
                       ? `Search for a title for ${selectedUser?.name}`
-                      : "House Requests"}
+                      : "Household Requests"}
                 </h2>
               </div>
               {isRequestListScreen ? (
@@ -1042,9 +1046,15 @@ export function KindlingScreen({
                 ) : null}
 
                 {requestsLoading ? (
-                  <SkeletonCards />
+                  <SkeletonCards household={isHouseholdScreen} />
                 ) : filteredRequests.length > 0 ? (
-                  <div className={styles.cardGrid}>
+                  <div
+                    className={
+                      isHouseholdScreen
+                        ? `${styles.cardGrid} ${styles.householdCardGrid}`
+                        : styles.cardGrid
+                    }
+                  >
                     {filteredRequests.map((request) => (
                       <RequestCard
                         key={request.id}

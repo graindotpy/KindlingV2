@@ -148,6 +148,15 @@
   padding: 12px;
 }
 
+.pageMobile .householdCardGrid .card {
+  grid-template-columns: 1fr;
+}
+
+.pageMobile .householdCardGrid .coverLarge {
+  width: 96px;
+  height: 136px;
+}
+
 .pageMobile .emptyState {
   padding: 20px 12px;
 }
@@ -365,6 +374,8 @@
 .searchInput,
 .selectInput,
 .textInput {
+  width: 100%;
+  min-width: 0;
   border-radius: 20px;
   border: 1px solid var(--line-strong);
   background: var(--paper-strong);
@@ -384,6 +395,11 @@
   padding: 0 18px;
 }
 
+.selectInput {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .primaryButton,
 .secondaryButton,
 .dangerButton,
@@ -393,6 +409,9 @@
   justify-content: center;
   min-height: 52px;
   padding: 0 20px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
   font-weight: 800;
 }
 
@@ -415,7 +434,7 @@
 
 .actionRow {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   gap: 10px;
 }
 
@@ -429,9 +448,17 @@
 
 .cardGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
   gap: 16px;
   align-items: stretch;
+}
+
+.householdCardGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+}
+
+.householdCardGrid .card {
+  align-items: start;
 }
 
 .card {
@@ -494,6 +521,7 @@
 .settingsPane {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .fieldLabel {
@@ -514,6 +542,7 @@
 
 .metaGrid dd {
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .cover,
@@ -613,6 +642,7 @@
 
 .systemNote {
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .errorBanner {
@@ -636,6 +666,7 @@
 .deliveryPanel {
   display: grid;
   gap: 10px;
+  min-width: 0;
   padding: 14px;
   border-radius: 18px;
   background:
@@ -646,9 +677,10 @@
 
 .inlineFieldGroup {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 12px;
   align-items: end;
+  min-width: 0;
 }
 
 .settingsGrid {
