@@ -15,10 +15,10 @@ Deploys automatically to the Zima from main via GHCR + WUD.
 1. Every push to `main` runs [`publish.yml`](.github/workflows/publish.yml). It runs the full CI checks (lint, typecheck, unit and browser tests, build) from [`ci.yml`](.github/workflows/ci.yml). Only if they pass does it build the Dockerfile and push `ghcr.io/graindotpy/kindlingv2:edge` and `:sha-<short sha>`, labelled with the commit SHA (`org.opencontainers.image.revision`). If several pushes land close together, only the newest one publishes.
 2. On the Zima, `/DATA/AppData/kindling/docker-compose.yml` runs `ghcr.io/graindotpy/kindlingv2:edge` with WUD labels. The `nuzlocke-wud` updater checks the `:edge` digest at the top of every hour. When the digest changes, it pulls the new image and recreates `kindling` (`docker.apps` trigger, no pruning) and posts the update to the Zima Discord channel. Expect a new commit to be live within about an hour.
 
-Check the running revision:
+Check the running revision. Read it from the image, not the container: WUD copies the old container's labels when it recreates it.
 
 ```sh
-docker inspect kindling --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker image inspect "$(docker inspect kindling --format '{{.Image}}')" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
 ```
 
 ### Roll back
