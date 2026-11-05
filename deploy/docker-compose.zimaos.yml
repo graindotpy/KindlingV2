@@ -1,0 +1,62 @@
+# Build `kindling:local` on your ZimaOS machine before importing this file.
+# Fill in connection/password values and check the host folders in the app editor.
+name: kindling
+services:
+  kindling:
+    image: kindling:local
+    pull_policy: never
+    container_name: kindling
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    user: "1000:1000"
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      DATABASE_PATH: /app/data/kindling.db
+      KINDLING_EMBEDDED_WORKER: "false"
+      KINDLING_ADMIN_PASSWORD: ""
+      KINDLING_SESSION_SECRET: ""
+      KINDLING_TRUSTED_ORIGINS: ""
+      READARR_BASE_URL: http://192.168.1.50:8787
+      READARR_API_KEY: ""
+      AUDIOBOOK_READARR_BASE_URL: http://192.168.1.50:8788
+      AUDIOBOOK_READARR_API_KEY: ""
+      OPENLIBRARY_CONTACT_EMAIL: ""
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_SECURE: "false"
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM_EMAIL: ""
+    volumes:
+      - /DATA/AppData/kindling/data:/app/data
+      - /DATA/Media/Books:/watched-books:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+x-casaos:
+  id: local.kindling
+  main: kindling
+  index: /
+  port_map: "3000"
+  scheme: http
+  # Replace this address and port with your Kindling address for the app tile icon.
+  icon: http://192.168.1.50:3000/kindling-mark.svg
+  title:
+    en_US: Kindling
+  tagline:
+    en_US: Books for your household
+  description:
+    en_US: Request ebooks and audiobooks through two Readarr instances, with optional Kindle delivery.
+  category: Media
+  version: "0.1.0"
+  architectures:
+    - amd64
+    - arm64

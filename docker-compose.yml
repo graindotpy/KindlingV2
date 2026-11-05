@@ -1,31 +1,29 @@
-services:
-  kindling-web:
-    build: .
-    container_name: kindling-web
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      # Keep non-secret defaults here. Add secrets in the ZimaOS UI.
-      DATABASE_PATH: /app/data/kindling.db
-      KINDLING_EMBEDDED_WORKER: "false"
-      NODE_ENV: production
-    volumes:
-      - ./data:/app/data
-      - ./watched-books:/watched-books
-    command: sh -lc "npm run db:migrate && npm run db:seed && npm run start"
+name: kindling
 
-  kindling-worker:
+services:
+  kindling:
+    image: kindling:local
     build: .
-    container_name: kindling-worker
+    container_name: kindling
+    init: true
     restart: unless-stopped
-    depends_on:
-      - kindling-web
+    stop_grace_period: 45s
+    ports:
+      - "${KINDLING_PORT:-3000}:3000"
+    env_file:
+      - .env
     environment:
       DATABASE_PATH: /app/data/kindling.db
       KINDLING_EMBEDDED_WORKER: "false"
       NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+    user: "${KINDLING_UID:-1000}:${KINDLING_GID:-1000}"
     volumes:
-      - ./data:/app/data
-      - ./watched-books:/watched-books
-    command: npm run worker
+      - ${KINDLING_DATA_DIR:-./data}:/app/data
+      - ${KINDLING_BOOKS_DIR:-./watched-books}:/watched-books:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

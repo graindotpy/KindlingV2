@@ -1,0 +1,55 @@
+name: Check Kindling
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check remote deployment script syntax
+        run: bash -n deploy/deploy-zimaos.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - name: Build the deployment image
+        run: docker build -t kindling:ci .
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-failure-details
+          path: test-results/
+          retention-days: 7
+  deployment-script-windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\deploy\Deploy-Kindling.ps1'),
+            [ref]$tokens,
+            [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count) {
+            $parseErrors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+      - name: Exercise package and privacy checks
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\Deploy-Kindling.ps1 -SkipChecks -DryRun

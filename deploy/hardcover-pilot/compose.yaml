@@ -1,0 +1,125 @@
+name: kindling-bookshelf-hardcover-pilot
+
+x-bookshelf-common: &bookshelf-common
+  image: ghcr.io/pennydreadful/bookshelf:hardcover-v0.4.20.129@sha256:388eecc94362580eae31ee0a454be6af516f8a311f8432a521c202fb475f4359
+  pull_policy: missing
+  restart: unless-stopped
+  depends_on:
+    metadata:
+      condition: service_started
+  environment:
+    PUID: "${PILOT_PUID:-1000}"
+    PGID: "${PILOT_PGID:-1000}"
+    TZ: "${PILOT_TIMEZONE:-Europe/London}"
+    HARDCOVER: "true"
+    METADATA_URL: http://metadata:8788
+  networks:
+    - application
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  ebook:
+    <<: *bookshelf-common
+    container_name: kindling-hc-pilot-ebook
+    ports:
+      - "${PILOT_BIND_ADDRESS:?Set PILOT_BIND_ADDRESS}:${PILOT_EBOOK_PORT:-18787}:8787"
+    volumes:
+      - ./data/config/ebook:/config
+      - ./data/library/ebooks:/books
+
+  audiobook:
+    <<: *bookshelf-common
+    container_name: kindling-hc-pilot-audiobook
+    ports:
+      - "${PILOT_BIND_ADDRESS:?Set PILOT_BIND_ADDRESS}:${PILOT_AUDIOBOOK_PORT:-18788}:8787"
+    volumes:
+      - ./data/config/audiobook:/config
+      - ./data/library/audiobooks:/books
+
+  metadata:
+    image: kindling/rreading-glasses-hardcover:local
+    pull_policy: never
+    container_name: kindling-hc-pilot-metadata
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint:
+      - /main
+      - serve
+    environment:
+      HARDCOVER_AUTH_FILE: /run/secrets/hardcover_auth
+      HARDCOVER_BATCH_SIZE: "5"
+      POSTGRES_HOST: postgres
+      POSTGRES_DATABASE: rreading_glasses
+      POSTGRES_USER: rreading_glasses
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      VERBOSE: "true"
+    secrets:
+      - hardcover_auth
+      - postgres_password
+    ports:
+      - "127.0.0.1:${PILOT_METADATA_PORT:-18789}:8788"
+    networks:
+      - application
+      - metadata_private
+    mem_limit: 256m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  postgres:
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
+    pull_policy: missing
+    container_name: kindling-hc-pilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rreading_glasses
+      POSTGRES_USER: rreading_glasses
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - metadata_private
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U rreading_glasses -d rreading_glasses
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    shm_size: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  hardcover_auth:
+    file: ./secrets/hardcover_auth
+  postgres_password:
+    file: ./secrets/postgres_password
+
+networks:
+  application:
+  metadata_private:
+    internal: true
