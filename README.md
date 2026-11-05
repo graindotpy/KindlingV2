@@ -8,6 +8,31 @@ Docker now runs the web app and its background worker in **one container**, with
 
 See the [project review](docs/PROJECT_REVIEW.md) for the search fixes, interface changes, validation and remaining Readarr metadata limitations. Removing a request now removes it from the person's list while preserving the household's Readarr files and monitoring.
 
+## Automatic deploys to the Zima
+
+Deploys automatically to the Zima from main via GHCR + WUD.
+
+1. Every push to `main` runs [`publish.yml`](.github/workflows/publish.yml). It runs the full CI checks (lint, typecheck, unit and browser tests, build) from [`ci.yml`](.github/workflows/ci.yml). Only if they pass does it build the Dockerfile and push `ghcr.io/graindotpy/kindlingv2:edge` and `:sha-<short sha>`, labelled with the commit SHA (`org.opencontainers.image.revision`). If several pushes land close together, only the newest one publishes.
+2. On the Zima, `/DATA/AppData/kindling/docker-compose.yml` runs `ghcr.io/graindotpy/kindlingv2:edge` with WUD labels. The `nuzlocke-wud` updater checks the `:edge` digest at the top of every hour. When the digest changes, it pulls the new image and recreates `kindling` (`docker.apps` trigger, no pruning) and posts the update to the Zima Discord channel. Expect a new commit to be live within about an hour.
+
+Check the running revision:
+
+```sh
+docker inspect kindling --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
+
+### Roll back
+
+In `/DATA/AppData/kindling`, change the `image:` line in `docker-compose.yml` to an older build. Use either `ghcr.io/graindotpy/kindlingv2:sha-<old short sha>` or the last locally built image, `kindling:local`. Then run:
+
+```sh
+docker compose up -d
+```
+
+A pinned `sha-` tag or `kindling:local` is not `:edge`, so WUD will not replace it. To resume automatic deploys, set the image back to `:edge` and run `docker compose up -d`.
+
+`deploy/Deploy-Kindling.ps1` still works for a one-off local build. While the compose file points at `:edge`, the next published `:edge` image will overwrite that local build.
+
 ## Install on ZimaOS with Docker Compose
 
 Use a persistent folder on your ZimaOS machine for this checkout, for example `/DATA/AppData/kindling`. The commands below run in that folder. Docker with Compose is required; Node.js is only needed when developing outside Docker.
@@ -66,7 +91,7 @@ For an app tile managed from ZimaOS, first build the image on that machine:
 docker build -t kindling:local .
 ```
 
-Then import [`deploy/docker-compose.zimaos.yml`](deploy/docker-compose.zimaos.yml) through ZimaOS's custom-app interface. Fill in the Readarr URLs, keys, household password and session secret in the app settings. Adjust the host folder paths and icon URL to your server before installing and prepare the data folder permissions as above. This template uses your locally built image. No published Kindling image is provided. Choose either this installation method or the command-line Compose method to avoid two apps competing for the same port and database.
+Then import [`deploy/docker-compose.zimaos.yml`](deploy/docker-compose.zimaos.yml) through ZimaOS's custom-app interface. Fill in the Readarr URLs, keys, household password and session secret in the app settings. Adjust the host folder paths and icon URL to your server before installing and prepare the data folder permissions as above. This template uses your locally built image. A published image is also available as `ghcr.io/graindotpy/kindlingv2:edge` (see above). Choose either this installation method or the command-line Compose method to avoid two apps competing for the same port and database.
 
 The template follows the official [ZimaOS Compose and app metadata reference](https://www.zimaspace.com/docs/developer/app-store-compose-x-casaos).
 
