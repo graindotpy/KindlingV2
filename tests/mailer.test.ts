@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import nodemailer from "nodemailer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAppConfigCache } from "@/lib/config";
 import { createSmtpMailer } from "@/lib/delivery/mailer";
@@ -51,6 +52,24 @@ describe("createSmtpMailer.sendBook", () => {
     }
 
     resetAppConfigCache();
+  });
+
+  it("builds a real MIME attachment using the installed mailer without sending email", async () => {
+    const { filePath, tempDir } = await createTempBookFile(32);
+    const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+    const sendMail = vi.spyOn(transport, "sendMail");
+    try {
+      const mailer = createSmtpMailer({ transporter: transport });
+      await mailer.sendBook({ to: "reader@kindle.com", title: "The Borrowers", author: "Mary Norton", requestedBy: "Alex", filePath });
+      const info = await sendMail.mock.results[0].value;
+      const message = info.message.toString();
+      expect(message).toContain("To: reader@kindle.com");
+      expect(message).toContain("Content-Disposition: attachment; filename=book-32.epub");
+      expect(message).toContain("Content-Transfer-Encoding: base64");
+    } finally {
+      transport.close();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("sends files that are within the configured attachment limit", async () => {

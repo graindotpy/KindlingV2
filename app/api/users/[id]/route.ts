@@ -27,11 +27,11 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request, { mutation: true });
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   const { id } = await context.params;
   const userId = Number(id);
@@ -83,11 +83,11 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request, { mutation: true });
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   const { id } = await context.params;
   const userId = Number(id);

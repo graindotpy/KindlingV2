@@ -81,6 +81,26 @@ export type SearchResultItem = {
   actions: Record<BookRequestFormat, SearchResultRequestAction>;
 };
 
+export type SearchCandidate = {
+  key: string;
+  title: string;
+  author: string;
+  year: number | null;
+  coverUrl: string | null;
+};
+
+export type DetailedSearchResponse =
+  | {
+      state: "choose";
+      candidates: SearchCandidate[];
+      warnings: string[];
+    }
+  | {
+      state: "results";
+      results: SearchResultItem[];
+      warnings: string[];
+    };
+
 export type HealthResponse = {
   app: "ok";
   database: "ok" | "error";

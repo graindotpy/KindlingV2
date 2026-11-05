@@ -11,11 +11,11 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request, { mutation: true });
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   ensureDefaultUsers();
 

@@ -11,6 +11,15 @@ const optionalString = z.preprocess((value) => {
   return trimmed === "" ? undefined : trimmed;
 }, z.string().optional());
 
+const optionalEmail = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
+}, z.string().email().optional());
+
 const optionalPositiveInteger = z.preprocess((value) => {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -54,6 +63,7 @@ const envSchema = z.object({
   AUDIOBOOK_READARR_ROOT_FOLDER_PATH: optionalString,
   AUDIOBOOK_READARR_QUALITY_PROFILE_ID: optionalPositiveInteger,
   AUDIOBOOK_READARR_METADATA_PROFILE_ID: optionalPositiveInteger,
+  OPENLIBRARY_CONTACT_EMAIL: optionalEmail,
   READARR_SYNC_INTERVAL_SECONDS: z.preprocess((value) => {
     if (value === undefined || value === null || value === "") {
       return 120;
@@ -112,6 +122,9 @@ export type AppConfig = {
   databasePath: string;
   syncIntervalMs: number;
   readarr: Record<BookRequestFormat, ReadarrInstanceConfig>;
+  openLibrary: {
+    contactEmail: string | null;
+  };
   auth: {
     password: string | null;
     sessionSecret: string | null;
@@ -168,7 +181,8 @@ export function getAppConfig(): AppConfig {
   const parsed = envSchema.parse(process.env);
 
   cachedConfig = {
-    databasePath: path.resolve(process.cwd(), parsed.DATABASE_PATH),
+    // The database is mounted at runtime; it must never be traced into the image.
+    databasePath: path.resolve(/* turbopackIgnore: true */ process.cwd(), parsed.DATABASE_PATH),
     syncIntervalMs: parsed.READARR_SYNC_INTERVAL_SECONDS * 1000,
     readarr: {
       ebook: {
@@ -185,6 +199,9 @@ export function getAppConfig(): AppConfig {
         qualityProfileId: parsed.AUDIOBOOK_READARR_QUALITY_PROFILE_ID ?? null,
         metadataProfileId: parsed.AUDIOBOOK_READARR_METADATA_PROFILE_ID ?? null,
       },
+    },
+    openLibrary: {
+      contactEmail: parsed.OPENLIBRARY_CONTACT_EMAIL ?? null,
     },
     auth: {
       password: parsed.KINDLING_ADMIN_PASSWORD ?? null,

@@ -1,5 +1,12 @@
 import { getReadarrConfig, isReadarrConfigured } from "@/lib/config";
 import type { BookRequestFormat } from "@/lib/requests/types";
+import {
+  filterAndRankBooksByTitle,
+  matchesLibraryQuery,
+  normalizeSearchQuery,
+  rankSearchBooks,
+} from "@/lib/search/query";
+import type { BookTitleSearchContext } from "@/lib/search/query";
 import type {
   ReadarrAuthor,
   ReadarrBookFile,
@@ -27,10 +34,28 @@ type ReadarrDefaults = {
 
 type ReadarrLookupSearchBook = Omit<ReadarrLookupBook, "author"> & {
   author?: ReadarrAuthor;
-  authorTitle?: string | null;
 };
 
-const cachedDefaultsByFormat: Partial<Record<BookRequestFormat, ReadarrDefaults>> = {};
+const REQUEST_TIMEOUT_MS = 15_000;
+const SEARCH_TIMEOUT_MS = 20_000;
+const RESOLVED_AUTHOR_SEARCH_TIMEOUT_MS = 10_000;
+const RESOLVED_DIRECT_FALLBACK_TIMEOUT_MS = 10_000;
+const MAX_SEARCH_RESULTS = 60;
+const libraryCache = new WeakMap<ReturnType<typeof getReadarrConfig>, {
+  expiresAt: number;
+  books: Promise<ReadarrLookupBook[]>;
+}>();
+
+export type ReadarrSearchResponse = {
+  books: ReadarrLookupBook[];
+  warnings: string[];
+  source: "metadata" | "library" | "mixed";
+};
+
+export type ReadarrAuthorBookSearch = BookTitleSearchContext & {
+  authorForeignId: string;
+  fallbackQuery?: string;
+};
 // Readarr can finish an async author refresh several seconds after a failed add-book response.
 const POST_ADD_LOOKUP_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000, 8_000];
 
@@ -104,7 +129,8 @@ function buildUrl(
     throw new ReadarrApiError(getReadarrConfigErrorMessage(format), 503);
   }
 
-  const url = new URL(pathname, `${baseUrl}/`);
+  // A leading slash would discard Readarr's configured URL Base (e.g. /readarr).
+  const url = new URL(pathname.replace(/^\/+/, ""), `${baseUrl.replace(/\/+$/, "")}/`);
 
   if (query) {
     for (const [key, value] of Object.entries(query)) {
@@ -139,89 +165,95 @@ async function readarrFetch<T>(
     throw new ReadarrApiError(getReadarrConfigErrorMessage(format), 503);
   }
 
-  const response = await fetch(buildUrl(format, pathname, query), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Api-Key": apiKey,
-      ...(init?.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), REQUEST_TIMEOUT_MS);
+  const signal = init?.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal;
+  try {
+    const response = await fetch(buildUrl(format, pathname, query), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Api-Key": apiKey,
+        ...(init?.headers ?? {}),
+      },
+      cache: "no-store",
+      signal,
+    });
 
-  const payload = await parseResponseBody(response);
+    const payload = await parseResponseBody(response);
 
-  if (!response.ok) {
-    throw new ReadarrApiError(
-      getErrorMessage(payload) ??
-        `Readarr returned ${response.status} ${response.statusText}.`,
-      response.status,
-    );
+    if (!response.ok) {
+      throw new ReadarrApiError(
+        response.status === 401 || response.status === 403
+          ? "Readarr rejected the API key. Check this instance's connection settings."
+          : response.status === 429
+            ? "Readarr's book catalogue is busy. Please try again shortly."
+            : /goodreads|metadata|readarrapi|bookinfo/i.test(getErrorMessage(payload) ?? "")
+              ? "Readarr's book catalogue could not be reached. Check the metadata provider in Readarr."
+              : `Readarr returned an error (${response.status}). Check its logs and connection settings.`,
+        response.status,
+      );
+    }
+
+    if (typeof payload === "string") {
+      throw new ReadarrApiError("Readarr returned an unexpected response. Check its base URL and reverse proxy settings.", 502);
+    }
+    return payload as T;
+  } catch (error) {
+    if (error instanceof ReadarrApiError) throw error;
+    if (signal.aborted) {
+      throw new ReadarrApiError("Readarr took too long to respond. Please try again shortly.", 504);
+    }
+    throw new ReadarrApiError("Kindling could not connect to Readarr. Check that it is running and its connection settings are correct.", 503);
+  } finally {
+    clearTimeout(timer);
   }
-
-  return payload as T;
 }
 
 function pickMatchingBook(books: ReadarrLookupBook[], selection: ReadarrLookupBook) {
-  return (
-    books.find((book) => book.foreignBookId === selection.foreignBookId) ??
-    books.find(
-      (book) => book.titleSlug && selection.titleSlug && book.titleSlug === selection.titleSlug,
-    ) ??
-    null
-  );
+  return books.find((book) => book.foreignBookId && book.foreignBookId === selection.foreignBookId) ?? null;
 }
 
-function normalizeText(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+function hasAuthorIdentity(author: ReadarrAuthor | undefined): author is ReadarrAuthor {
+  return typeof author?.authorName === "string" && Boolean(author.authorName.trim()) &&
+    typeof author.foreignAuthorId === "string" && Boolean(author.foreignAuthorId.trim());
 }
 
-function toDisplayAuthorName(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed.includes(",")) {
-    return trimmed
-      .split(/\s+/)
-      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-      .join(" ");
-  }
-
-  const [lastName, firstName] = trimmed.split(",", 2).map((segment) => segment.trim());
-  return [firstName, lastName].filter(Boolean).join(" ");
+function hasBookIdentity(book: ReadarrLookupSearchBook): book is ReadarrLookupBook {
+  return typeof book.title === "string" && Boolean(book.title.trim()) &&
+    typeof book.foreignBookId === "string" && Boolean(book.foreignBookId.trim()) && hasAuthorIdentity(book.author);
 }
 
-function extractAuthorSearchName(book: ReadarrLookupSearchBook) {
-  if (book.author?.authorName?.trim()) {
-    return book.author.authorName.trim();
-  }
+function normalizeGoodreadsAuthorId(value: string) {
+  return value.trim().match(/^(?:goodreads(?:-author)?:)?(\d+)$/i)?.[1] ?? null;
+}
 
-  const authorTitle = book.authorTitle?.trim();
-  if (!authorTitle) {
-    return null;
-  }
+function hasExpectedAuthor(book: ReadarrLookupBook, authorForeignId: string) {
+  return normalizeGoodreadsAuthorId(book.author.foreignAuthorId) === authorForeignId;
+}
 
-  const title = book.title?.trim();
-  if (title) {
-    const suffixPattern = new RegExp(`${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
-    const withoutTitle = authorTitle.replace(suffixPattern, "").trim();
-    if (withoutTitle) {
-      return toDisplayAuthorName(withoutTitle);
+function lookupRows(payload: unknown): ReadarrLookupSearchBook[] {
+  if (!Array.isArray(payload)) throw new ReadarrApiError("Readarr returned an invalid book catalogue response.", 502);
+  return payload.filter((book) => book && typeof book === "object" &&
+    typeof book.title === "string" && book.title.trim() && typeof book.foreignBookId === "string" && book.foreignBookId.trim());
+}
+
+function unifiedSearchRows(payload: unknown) {
+  if (!Array.isArray(payload)) throw new ReadarrApiError("Readarr returned an invalid book catalogue response.", 502);
+  // /search includes separate author entries; only book entries are requestable.
+  return lookupRows(payload.flatMap((entry) => entry && typeof entry === "object" && entry.book ? [entry.book] : []));
+}
+
+async function mapWithConcurrency<T, R>(values: T[], callback: (value: T) => Promise<R>) {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(4, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      results[index] = await callback(values[index]);
     }
-  }
-
-  return toDisplayAuthorName(authorTitle);
-}
-
-function selectMatchingAuthor(authors: ReadarrAuthor[], authorName: string) {
-  const target = normalizeText(authorName);
-
-  return (
-    authors.find((author) => normalizeText(author.authorName) === target) ??
-    authors.find(
-      (author) => author.authorNameLastFirst && normalizeText(author.authorNameLastFirst) === target,
-    ) ??
-    authors[0] ??
-    null
-  );
+  }));
+  return results;
 }
 
 function wait(ms: number) {
@@ -233,13 +265,17 @@ export function pickBestCoverUrl(resource: {
   remotePoster?: string | null;
   images?: Array<{ remoteUrl?: string | null; url?: string | null }> | null;
 }) {
-  return (
-    resource.remoteCover ??
-    resource.remotePoster ??
-    resource.images?.find((image) => image.remoteUrl || image.url)?.remoteUrl ??
-    resource.images?.find((image) => image.remoteUrl || image.url)?.url ??
-    null
-  );
+  const candidates = [resource.remoteCover, resource.remotePoster,
+    ...(resource.images?.flatMap((image) => [image.remoteUrl, image.url]) ?? [])];
+  return candidates.find((url) => {
+    if (!url) return false;
+    try {
+      const parsed = new URL(url);
+      return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }) ?? null;
 }
 
 export function pickPreferredEditionId(book: ReadarrLookupBook) {
@@ -248,6 +284,7 @@ export function pickPreferredEditionId(book: ReadarrLookupBook) {
 }
 
 export function createReadarrService(format: BookRequestFormat = "ebook") {
+  let defaultsCache: { value: ReadarrDefaults; expiresAt: number; config: ReturnType<typeof getReadarrConfig> } | null = null;
   async function getRootFolders() {
     return readarrFetch<ReadarrRootFolder[]>(format, "/api/v1/rootfolder");
   }
@@ -261,12 +298,10 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
   }
 
   async function resolveDefaults(): Promise<ReadarrDefaults> {
-    const cachedDefaults = cachedDefaultsByFormat[format];
-    if (cachedDefaults) {
-      return cachedDefaults;
-    }
-
     const config = getReadarrConfig(format);
+    if (defaultsCache && defaultsCache.config === config && defaultsCache.expiresAt > Date.now()) {
+      return defaultsCache.value;
+    }
 
     const [rootFolders, qualityProfiles, metadataProfiles] = await Promise.all([
       getRootFolders(),
@@ -274,94 +309,346 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       getMetadataProfiles(),
     ]);
 
-    const rootFolderPath = config.rootFolderPath ?? rootFolders[0]?.path;
+    const rootFolder = config.rootFolderPath
+      ? rootFolders.find((folder) => folder.path === config.rootFolderPath)
+      : rootFolders[0];
+    const rootFolderPath = rootFolder?.path;
     const qualityProfileId =
       config.qualityProfileId ??
-      rootFolders[0]?.defaultQualityProfileId ??
+      rootFolder?.defaultQualityProfileId ??
       qualityProfiles[0]?.id;
     const metadataProfileId =
       config.metadataProfileId ??
-      rootFolders[0]?.defaultMetadataProfileId ??
+      rootFolder?.defaultMetadataProfileId ??
       metadataProfiles[0]?.id;
 
-    if (!rootFolderPath || !qualityProfileId || !metadataProfileId) {
+    if (!rootFolderPath || !qualityProfileId || !metadataProfileId ||
+      !qualityProfiles.some((profile) => profile.id === qualityProfileId) ||
+      !metadataProfiles.some((profile) => profile.id === metadataProfileId)) {
       throw new ReadarrApiError(
         "Readarr is missing a usable root folder or profile configuration.",
         400,
       );
     }
 
-    cachedDefaultsByFormat[format] = {
+    const value = {
       rootFolderPath,
       qualityProfileId,
       metadataProfileId,
     };
 
-    return cachedDefaultsByFormat[format] as ReadarrDefaults;
+    defaultsCache = { value, expiresAt: Date.now() + 60_000, config };
+    return value;
   }
 
   async function getBooksByAuthor(authorId: number) {
     return readarrFetch<ReadarrLookupBook[]>(format, "/api/v1/book", undefined, { authorId });
   }
 
-  async function lookupAuthorByName(authorName: string) {
-    const authors = await readarrFetch<ReadarrAuthor[]>(
-      format,
-      "/api/v1/author/lookup",
-      undefined,
-      {
-        term: authorName,
-      },
-    );
-
-    return selectMatchingAuthor(authors, authorName);
+  async function enrichLookupBooks(books: ReadarrLookupSearchBook[], signal: AbortSignal) {
+    const enriched = await mapWithConcurrency(books, async (book) => {
+      if (hasBookIdentity(book)) return book;
+      if (signal.aborted) return null;
+      // /book/lookup intentionally omits author details in upstream Readarr.
+      // Author lookup accepts work IDs too, so no author-name guess is needed.
+      if (!signal.aborted && /^\d+$/.test(book.foreignBookId)) {
+        try {
+          const payload = await readarrFetch<ReadarrAuthor[]>(format, "/api/v1/author/lookup", { signal }, {
+            term: `work:${book.foreignBookId}`,
+          });
+          const authors = Array.isArray(payload) ? payload.filter(hasAuthorIdentity) : [];
+          if (new Set(authors.map((author) => author.foreignAuthorId)).size === 1) {
+            const author = authors[0];
+            return { ...book, authorId: author.id, author } satisfies ReadarrLookupBook;
+          }
+        } catch {
+          // Preserve other trustworthy rows and report the omitted ones to the caller.
+        }
+      }
+      return null;
+    });
+    return enriched.filter((book): book is ReadarrLookupBook => book !== null);
   }
 
-  async function enrichLookupBooks(books: ReadarrLookupSearchBook[]) {
-    const authorNames = Array.from(
-      new Set(
-        books
-          .filter((book) => !book.author?.authorName)
-          .map(extractAuthorSearchName)
-          .filter((name): name is string => Boolean(name)),
-      ),
-    );
+  async function loadLibrary() {
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), 5_000);
+    try {
+      const books = lookupRows(await readarrFetch(format, "/api/v1/book", { signal: timeout.signal }));
+      let authors: ReadarrAuthor[] = [];
+      if (books.some((book) => !hasAuthorIdentity(book.author))) {
+        const payload = await readarrFetch<ReadarrAuthor[]>(format, "/api/v1/author", { signal: timeout.signal });
+        if (Array.isArray(payload)) authors = payload;
+      }
+      const authorsById = new Map(authors.filter((author) => hasAuthorIdentity(author) && author.id && author.id > 0).map((author) => [author.id, author]));
+      return books.map((book) => hasBookIdentity(book) ? book : {
+        ...book, author: authorsById.get(book.authorId),
+      }).filter(hasBookIdentity);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-    if (authorNames.length === 0) {
-      return books as ReadarrLookupBook[];
+  async function searchLibrary(query: string) {
+    const config = getReadarrConfig(format);
+    let cached = libraryCache.get(config);
+    if (!cached || cached.expiresAt <= Date.now()) {
+      const books = loadLibrary();
+      cached = { expiresAt: Date.now() + 30_000, books };
+      libraryCache.set(config, cached);
+      books.catch(() => {
+        if (libraryCache.get(config)?.books === books) libraryCache.delete(config);
+      });
+    }
+    return (await cached.books).filter((book) => matchesLibraryQuery(book, query));
+  }
+
+  async function searchBooksWithDiagnostics(query: string): Promise<ReadarrSearchResponse> {
+    const term = normalizeSearchQuery(query);
+    if (!term) return { books: [], warnings: [], source: "metadata" };
+    if (term.length > 300) throw new ReadarrApiError("Please use a shorter title, author name, or ISBN.", 400);
+    const label = format === "audiobook" ? "Audiobook" : "Ebook";
+    const warnings: string[] = [];
+    let books: ReadarrLookupBook[] = [];
+    let remoteError: unknown = null;
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), SEARCH_TIMEOUT_MS);
+    try {
+      let rows: ReadarrLookupSearchBook[] = [];
+      try {
+        // This is Readarr's own UI search API; it includes authors and editions.
+        rows = unifiedSearchRows(await readarrFetch(format, "/api/v1/search", { signal: timeout.signal }, { term }));
+      } catch (error) {
+        remoteError = error;
+      }
+      if (rows.length === 0 && !timeout.signal.aborted) {
+        rows = lookupRows(await readarrFetch(format, "/api/v1/book/lookup", { signal: timeout.signal }, { term }));
+        remoteError = null;
+      }
+      rows = rows.slice(0, MAX_SEARCH_RESULTS);
+      books = await enrichLookupBooks(rows, timeout.signal);
+      if (rows.length > books.length) {
+        warnings.push(`${label} search returned incomplete book details. Some results could not be safely matched to an author.`);
+      }
+      if (rows.length > 0 && books.length === 0) {
+        remoteError = new ReadarrApiError(`${label} search could not verify book details. Check the metadata provider in Readarr.`, 502);
+      }
+    } catch (error) {
+      remoteError = error;
+    } finally {
+      clearTimeout(timer);
     }
 
-    const authorEntries = await Promise.all(
-      authorNames.map(async (authorName) => {
-        try {
-          return [authorName, await lookupAuthorByName(authorName)] as const;
-        } catch {
-          return [authorName, null] as const;
+    let source: ReadarrSearchResponse["source"] = "metadata";
+    if (books.length === 0 || warnings.length > 0) {
+      try {
+        const localBooks = await searchLibrary(term);
+        if (localBooks.length > 0) {
+          source = books.length ? "mixed" : "library";
+          books.push(...localBooks);
+          warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
         }
-      }),
+      } catch {
+        // Keep the metadata error when both lookup and local fallback failed.
+      }
+    }
+    if (books.length === 0 && remoteError) throw remoteError;
+    if (books.length === 0) {
+      // Upstream Readarr sometimes converts Goodreads/metadata errors to a successful empty list.
+      warnings.push(`${label} Readarr returned no matches. Try a title, author, ISBN, or Goodreads book link; if searches keep returning nothing, check Readarr's metadata provider.`);
+    }
+    const uniqueBooks = new Map<string, ReadarrLookupBook>();
+    for (const book of books) {
+      const existing = uniqueBooks.get(book.foreignBookId);
+      if (!existing || (!existing.id && book.id)) uniqueBooks.set(book.foreignBookId, book);
+    }
+    return { books: rankSearchBooks([...uniqueBooks.values()], term).slice(0, MAX_SEARCH_RESULTS), warnings, source };
+  }
+
+  async function searchOriginalQueryForResolvedBook(
+    query: string,
+    titleContext: BookTitleSearchContext,
+    authorForeignId: string,
+  ) {
+    const term = normalizeSearchQuery(query);
+    const label = format === "audiobook" ? "Audiobook" : "Ebook";
+    const warnings: string[] = [];
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () => timeout.abort(),
+      RESOLVED_DIRECT_FALLBACK_TIMEOUT_MS,
     );
-    const authorsByName = new Map(authorEntries);
 
-    return books.flatMap((book) => {
-      if (book.author?.authorName) {
-        return [book as ReadarrLookupBook];
+    try {
+      // This is deliberately one standard Readarr search with the user's exact
+      // input. An empty response is final and does not cascade into /book/lookup.
+      const rows = unifiedSearchRows(await readarrFetch(
+        format,
+        "/api/v1/search",
+        { signal: timeout.signal },
+        { term },
+      ));
+      const matchingRows = filterAndRankBooksByTitle(rows, titleContext);
+      const enrichedBooks = await enrichLookupBooks(matchingRows, timeout.signal);
+      const books = enrichedBooks.filter(
+        (book) => hasExpectedAuthor(book, authorForeignId),
+      );
+
+      if (matchingRows.length > enrichedBooks.length) {
+        warnings.push(`${label} search returned incomplete book details. Some matching results could not be safely verified.`);
+      }
+      if (enrichedBooks.length > books.length) {
+        warnings.push(`${label} search returned matching titles for a different author. Those results were ignored.`);
       }
 
-      const authorName = extractAuthorSearchName(book);
-      const author = authorName ? authorsByName.get(authorName) ?? null : null;
+      return { books, warnings, error: null };
+    } catch (error) {
+      return { books: [] as ReadarrLookupBook[], warnings, error };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-      if (!author?.authorName || !author.foreignAuthorId) {
-        return [];
+  async function searchBooksByAuthorWithDiagnostics(
+    search: ReadarrAuthorBookSearch,
+  ): Promise<ReadarrSearchResponse> {
+    const authorForeignId = normalizeGoodreadsAuthorId(search.authorForeignId);
+    if (!authorForeignId) {
+      throw new ReadarrApiError("The selected author does not have a valid Goodreads ID.", 400);
+    }
+
+    const targetTitle = search.targetTitle.trim().replace(/\s+/g, " ");
+    const alternateTitles = (search.alternateTitles ?? [])
+      .map((title) => title.trim().replace(/\s+/g, " "))
+      .filter(Boolean);
+    const fallbackQuery = search.fallbackQuery?.trim().replace(/\s+/g, " ") ?? "";
+    if (!targetTitle) {
+      throw new ReadarrApiError("The selected book does not have a usable title.", 400);
+    }
+    if ([targetTitle, ...alternateTitles, fallbackQuery].some((title) => title.length > 300)) {
+      throw new ReadarrApiError("Please use a shorter book title.", 400);
+    }
+
+    const titleContext: BookTitleSearchContext = { targetTitle, alternateTitles };
+    const lookupTerm = `author:${authorForeignId}`;
+    const label = format === "audiobook" ? "Audiobook" : "Ebook";
+    const warnings: string[] = [];
+    let books: ReadarrLookupBook[] = [];
+    let remoteError: unknown = null;
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () => timeout.abort(),
+      fallbackQuery ? RESOLVED_AUTHOR_SEARCH_TIMEOUT_MS : SEARCH_TIMEOUT_MS,
+    );
+
+    try {
+      let rows: ReadarrLookupSearchBook[] = [];
+      let shouldTryBookLookup = false;
+      try {
+        rows = unifiedSearchRows(await readarrFetch(format, "/api/v1/search", { signal: timeout.signal }, {
+          term: lookupTerm,
+        }));
+        shouldTryBookLookup = rows.length === 0;
+      } catch (error) {
+        remoteError = error;
+        // Older Readarr builds may not expose the unified search endpoint.
+        // Other failures move directly to the user's original query rather
+        // than multiplying requests to an already unhealthy metadata service.
+        shouldTryBookLookup = error instanceof ReadarrApiError && error.status === 404;
+      }
+      if (shouldTryBookLookup && !timeout.signal.aborted) {
+        rows = lookupRows(await readarrFetch(format, "/api/v1/book/lookup", { signal: timeout.signal }, {
+          term: lookupTerm,
+        }));
+        remoteError = null;
       }
 
-      return [
-        {
-          ...book,
-          authorId: book.authorId && book.authorId > 0 ? book.authorId : author.id,
-          author,
-        } satisfies ReadarrLookupBook,
-      ];
-    });
+      // An author lookup can return hundreds of works. Filter the complete response
+      // before enrichment or the display cap so a late matching work is not lost.
+      const matchingRows = filterAndRankBooksByTitle(rows, titleContext);
+      const enrichedBooks = await enrichLookupBooks(matchingRows, timeout.signal);
+      books = enrichedBooks.filter((book) => hasExpectedAuthor(book, authorForeignId));
+
+      if (matchingRows.length > enrichedBooks.length) {
+        warnings.push(`${label} search returned incomplete book details. Some matching results could not be safely verified.`);
+      }
+      if (enrichedBooks.length > books.length) {
+        warnings.push(`${label} search returned matching titles for a different author. Those results were ignored.`);
+      }
+    } catch (error) {
+      remoteError = error;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    let source: ReadarrSearchResponse["source"] = "metadata";
+    if (books.length === 0 && fallbackQuery) {
+      const fallbackNotice = `${label} Readarr did not return a verified match from the author catalogue, so Kindling used its standard search for your original query.`;
+      const [fallback, localBooks] = await Promise.all([
+        searchOriginalQueryForResolvedBook(
+          fallbackQuery,
+          titleContext,
+          authorForeignId,
+        ),
+        searchLibrary(lookupTerm).then((libraryBooks) =>
+          filterAndRankBooksByTitle(libraryBooks, titleContext)
+            .filter((book) => hasExpectedAuthor(book, authorForeignId)),
+        ).catch(() => [] as ReadarrLookupBook[]),
+      ]);
+
+      warnings.push(fallbackNotice, ...fallback.warnings);
+      if (localBooks.length > 0) {
+        books.push(...localBooks);
+        source = "library";
+        warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
+      }
+      if (fallback.books.length > 0) {
+        books.push(...fallback.books);
+        source = localBooks.length > 0 ? "mixed" : "metadata";
+      }
+
+      if (fallback.error && books.length === 0) {
+        remoteError = fallback.error;
+      } else {
+        // A completed fallback, including a clean empty response, supersedes the
+        // failed author lookup. Empty really is the final result at this point.
+        remoteError = null;
+      }
+    } else if (books.length === 0 || warnings.length > 0) {
+      try {
+        const localBooks = filterAndRankBooksByTitle(
+          await searchLibrary(lookupTerm),
+          titleContext,
+        ).filter((book) => hasExpectedAuthor(book, authorForeignId));
+        if (localBooks.length > 0) {
+          source = books.length ? "mixed" : "library";
+          books.push(...localBooks);
+          warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
+        }
+      } catch {
+        // Keep the metadata error when both lookup and local fallback failed.
+      }
+    }
+
+    if (books.length === 0 && remoteError) throw remoteError;
+    if (books.length === 0) {
+      warnings.push(fallbackQuery
+        ? `${label} Readarr returned no work matching both the selected title and author, including from its standard search.`
+        : `${label} Readarr returned no matching works for the selected title. Its metadata provider may have an incomplete author catalogue.`);
+    }
+
+    const uniqueBooks = new Map<string, ReadarrLookupBook>();
+    for (const book of books) {
+      const existing = uniqueBooks.get(book.foreignBookId);
+      if (!existing || (!existing.id && book.id)) uniqueBooks.set(book.foreignBookId, book);
+    }
+
+    return {
+      books: filterAndRankBooksByTitle([...uniqueBooks.values()], titleContext)
+        .slice(0, MAX_SEARCH_RESULTS),
+      warnings,
+      source,
+    };
   }
 
   async function findExistingBookForSelection(
@@ -370,9 +657,10 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
   ) {
     if (selection.id && selection.id > 0) {
       try {
-        return await service.getBook(selection.id);
-      } catch {
-        // Ignore and fall back to author lookup.
+        const book = await service.getBook(selection.id);
+        if (pickMatchingBook([book], selection)) return book;
+      } catch (error) {
+        if (!(error instanceof ReadarrApiError) || error.status !== 404) throw error;
       }
     }
 
@@ -447,17 +735,16 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       }
     },
 
-    async searchBooks(query: string) {
-      const books = await readarrFetch<ReadarrLookupSearchBook[]>(
-        format,
-        "/api/v1/book/lookup",
-        undefined,
-        {
-          term: query,
-        },
-      );
+    searchBooksWithDiagnostics,
 
-      return enrichLookupBooks(books);
+    searchBooksByAuthorWithDiagnostics,
+
+    async searchBooksByAuthor(search: ReadarrAuthorBookSearch) {
+      return (await searchBooksByAuthorWithDiagnostics(search)).books;
+    },
+
+    async searchBooks(query: string) {
+      return (await searchBooksWithDiagnostics(query)).books;
     },
 
     getBook(bookId: number) {
@@ -493,14 +780,34 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
     resolveDefaults,
 
     async ensureAuthorExistsForBook(selection: ReadarrLookupBook) {
-      if (selection.author.id && selection.author.id > 0) {
-        return selection.author;
+      if (!hasBookIdentity(selection)) {
+        throw new ReadarrApiError("This book is missing verified author details. Please search again.", 400);
       }
+      const matchesSelection = (author: ReadarrAuthor | undefined) => hasAuthorIdentity(author) &&
+        Number.isInteger(author.id) && (author.id ?? 0) > 0 && author.foreignAuthorId === selection.author.foreignAuthorId;
+      const findLocalAuthor = async () => {
+        const authors = await readarrFetch<ReadarrAuthor[]>(format, "/api/v1/author");
+        if (!Array.isArray(authors)) throw new ReadarrApiError("Readarr returned an invalid author response.", 502);
+        return authors.find(matchesSelection);
+      };
+      if (selection.author.id && selection.author.id > 0) {
+        try {
+          const author = await readarrFetch<ReadarrAuthor>(format, `/api/v1/author/${selection.author.id}`);
+          if (matchesSelection(author)) return author;
+        } catch (error) {
+          if (!(error instanceof ReadarrApiError) || error.status !== 404) throw error;
+        }
+      }
+
+      const existingAuthor = await findLocalAuthor();
+      if (existingAuthor) return existingAuthor;
 
       const defaults = await resolveDefaults();
 
       const payload: ReadarrAuthor = {
         ...selection.author,
+        id: 0,
+        path: undefined,
         qualityProfileId: defaults.qualityProfileId,
         metadataProfileId: defaults.metadataProfileId,
         rootFolderPath: defaults.rootFolderPath,
@@ -515,18 +822,23 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       };
 
       try {
-        return await readarrFetch<ReadarrAuthor>(format, "/api/v1/author", {
+        const author = await readarrFetch<ReadarrAuthor>(format, "/api/v1/author", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        libraryCache.delete(getReadarrConfig(format));
+        if (!matchesSelection(author)) throw new ReadarrApiError("Readarr could not verify the author for this request.", 502);
+        return author;
       } catch (error) {
-        const refreshedResults = await service.searchBooks(
-          `${selection.title} ${selection.author.authorName}`,
-        );
-        const refreshedBook = pickMatchingBook(refreshedResults, selection);
-
-        if (refreshedBook?.author.id) {
-          return refreshedBook.author;
+        // An author can be created even when Readarr's refresh returns an error.
+        try {
+          const recovered = await findLocalAuthor();
+          if (recovered) {
+            libraryCache.delete(getReadarrConfig(format));
+            return recovered;
+          }
+        } catch {
+          // Report the original add failure if recovery also fails.
         }
 
         throw error;
@@ -549,6 +861,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
 
       const payload: ReadarrLookupBook = {
         ...selection,
+        id: 0,
         authorId,
         monitored: true,
         anyEditionOk: selection.anyEditionOk ?? true,
@@ -569,10 +882,15 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       };
 
       try {
-        return await readarrFetch<ReadarrLookupBook>(format, "/api/v1/book", {
+        const added = await readarrFetch<ReadarrLookupBook>(format, "/api/v1/book", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        libraryCache.delete(getReadarrConfig(format));
+        if (!added?.id || !pickMatchingBook([added], selection)) {
+          throw new ReadarrApiError("Readarr could not verify the book added for this request.", 502);
+        }
+        return added;
       } catch (error) {
         const fallbackBook = await findExistingBookForSelectionWithRetries(selection, authorId);
         if (fallbackBook) {
@@ -633,4 +951,10 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
   return service;
 }
 
-export type ReadarrService = ReturnType<typeof createReadarrService>;
+type FullReadarrService = ReturnType<typeof createReadarrService>;
+type OptionalSearchMethod =
+  | "searchBooksWithDiagnostics"
+  | "searchBooksByAuthorWithDiagnostics"
+  | "searchBooksByAuthor";
+export type ReadarrService = Omit<FullReadarrService, OptionalSearchMethod> &
+  Partial<Pick<FullReadarrService, OptionalSearchMethod>>;

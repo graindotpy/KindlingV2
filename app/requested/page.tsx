@@ -1,13 +1,8 @@
+import type { Metadata } from "next";
 import { KindlingScreen } from "@/components/kindling-screen";
-import { getIsMobileDevice } from "@/lib/mobile-device.server";
 
-export default async function RequestedPage() {
-  const isMobileDevice = await getIsMobileDevice();
+export const metadata: Metadata = { title: "Household" };
 
-  return (
-    <KindlingScreen
-      screen="requested"
-      isMobileCompatibilityMode={isMobileDevice}
-    />
-  );
+export default function RequestedPage() {
+  return <KindlingScreen screen="requested" />;
 }

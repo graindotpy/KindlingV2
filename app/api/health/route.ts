@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiSession } from "@/lib/auth";
 import { ensureBackgroundServices } from "@/lib/bootstrap";
 import { initializeDatabase } from "@/lib/db/client";
 import { createReadarrService } from "@/lib/readarr/service";
@@ -8,7 +9,9 @@ import { getBackgroundWorkerStatus } from "@/lib/worker-status";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authError = requireApiSession(request);
+  if (authError) return authError;
   ensureBackgroundServices();
   let database: HealthResponse["database"] = "ok";
   let worker: HealthResponse["worker"] = {

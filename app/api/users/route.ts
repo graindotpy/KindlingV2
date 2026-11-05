@@ -22,21 +22,21 @@ const bodySchema = z.object({
 });
 
 export async function GET(request: Request) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request);
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   return NextResponse.json(listLocalUsers());
 }
 
 export async function POST(request: Request) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request, { mutation: true });
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   const body = await request.json().catch(() => null);
   const parsed = bodySchema.safeParse(body);

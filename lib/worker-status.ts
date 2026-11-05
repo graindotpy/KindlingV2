@@ -1,9 +1,6 @@
-import { getAppConfig } from "@/lib/config";
-import { createBookRequestsRepository } from "@/lib/db/repositories/book-requests";
 import { createSettingsRepository } from "@/lib/db/repositories/settings";
 import type { DeliveryWorkerStatus } from "@/lib/delivery/types";
 
-const WATCH_DIRECTORY_KEY = "delivery.watchDirectory";
 const WORKER_LAST_STARTED_AT_KEY = "worker.lastStartedAt";
 const WORKER_LAST_HEARTBEAT_AT_KEY = "worker.lastHeartbeatAt";
 const WORKER_LAST_SUCCESS_AT_KEY = "worker.lastSuccessAt";
@@ -18,9 +15,8 @@ function setSettingValue(key: string, value: string | null, updatedAt: string) {
   createSettingsRepository().set(key, value, updatedAt);
 }
 
-function getWorkerFreshnessWindowMs() {
-  return Math.max(getAppConfig().delivery.scanIntervalMs * 2 + 15_000, 90_000);
-}
+// Heartbeats run every 15 seconds independently of the scan interval.
+const WORKER_FRESHNESS_WINDOW_MS = 90_000;
 
 export function recordWorkerStarted(timestamp: string) {
   setSettingValue(WORKER_LAST_STARTED_AT_KEY, timestamp, timestamp);
@@ -29,6 +25,10 @@ export function recordWorkerStarted(timestamp: string) {
 
 export function recordWorkerHeartbeat(timestamp: string) {
   setSettingValue(WORKER_LAST_HEARTBEAT_AT_KEY, timestamp, timestamp);
+}
+
+export function recordWorkerStopped(timestamp: string) {
+  setSettingValue(WORKER_LAST_HEARTBEAT_AT_KEY, null, timestamp);
 }
 
 export function recordWorkerSuccess(timestamp: string) {
@@ -43,27 +43,24 @@ export function recordWorkerError(timestamp: string, message: string) {
 }
 
 export function getBackgroundWorkerStatus(): DeliveryWorkerStatus {
-  const watchDirectory = getSettingValue(WATCH_DIRECTORY_KEY);
-  const hasPendingSearchRetries = createBookRequestsRepository().hasPendingSearchRetries();
   const lastStartedAt = getSettingValue(WORKER_LAST_STARTED_AT_KEY);
   const lastHeartbeatAt = getSettingValue(WORKER_LAST_HEARTBEAT_AT_KEY);
   const lastSuccessAt = getSettingValue(WORKER_LAST_SUCCESS_AT_KEY);
   const lastErrorAt = getSettingValue(WORKER_LAST_ERROR_AT_KEY);
   const lastErrorMessage = getSettingValue(WORKER_LAST_ERROR_MESSAGE_KEY);
-  const expected = Boolean(watchDirectory?.trim()) || hasPendingSearchRetries;
+  // Status synchronization always runs in the worker, even without Kindle delivery.
+  const expected = true;
   const lastHeartbeatMs = lastHeartbeatAt ? new Date(lastHeartbeatAt).getTime() : NaN;
   const running =
     Number.isFinite(lastHeartbeatMs) &&
-    Date.now() - lastHeartbeatMs <= getWorkerFreshnessWindowMs();
+    Date.now() - lastHeartbeatMs <= WORKER_FRESHNESS_WINDOW_MS;
 
-  let message = "Background work is idle until automatic delivery or queued search retries need it.";
+  let message = "Automatic updates have stopped. Ask the person who manages Kindling to restart the app.";
 
-  if (expected && running) {
+  if (running && lastErrorAt && lastErrorMessage) {
+    message = `Background work needs attention: ${lastErrorMessage}`;
+  } else if (running) {
     message = "Background worker is running.";
-  } else if (expected && lastErrorAt && lastErrorMessage) {
-    message = `Background worker is failing: ${lastErrorMessage}`;
-  } else if (expected) {
-    message = "Background worker is not reporting in. Start `npm run worker`.";
   }
 
   return {

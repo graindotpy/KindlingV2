@@ -1,13 +1,5 @@
-import { KindlingScreen } from "@/components/kindling-screen";
-import { getIsMobileDevice } from "@/lib/mobile-device.server";
+import { redirect } from "next/navigation";
 
-export default async function RequestPage() {
-  const isMobileDevice = await getIsMobileDevice();
-
-  return (
-    <KindlingScreen
-      screen="request"
-      isMobileCompatibilityMode={isMobileDevice}
-    />
-  );
+export default function RequestPage() {
+  redirect("/");
 }

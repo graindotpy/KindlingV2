@@ -237,6 +237,7 @@ function makeDeps() {
     return {
       isConfigured: vi.fn(() => true),
       searchBooks: vi.fn<(query: string) => Promise<ReadarrLookupBook[]>>(async () => []),
+      searchBooksByAuthor: vi.fn(async () => [] as ReadarrLookupBook[]),
       addBookForRequest: vi.fn(async () => readarrBook),
       monitorRequestedBook: vi.fn(async () => [readarrBook]),
       unmonitorRequestedBook: vi.fn(async () => [readarrBook]),
@@ -525,96 +526,50 @@ describe("createRequestService.runAutomaticSearchRetryCycle", () => {
 });
 
 describe("createRequestService.deleteRequest", () => {
-  it("deletes an existing Readarr file and unmonitors the book", async () => {
-    const { service, ebookReadarr, seedRequest } = makeDeps();
-    const request = seedRequest({
-      status: "available",
-      statusMessage: "Book found in watched folder.",
-      matchedFilePath: "C:\\Books\\The Borrowers.epub",
-      matchedAt: FIXED_TIME,
-      lastDeliveryAt: FIXED_TIME,
-      lastDeliveryRecipient: "mum@kindle.com",
-      lastDeliveryTrigger: "manual",
-      lastDeliveryMessage: "Sent to Kindle.",
-    });
-    ebookReadarr.getBookFiles.mockResolvedValueOnce([
-      {
-        id: 700,
-        bookId: 101,
-        path: "C:\\Books\\The Borrowers.epub",
-      },
-    ]);
-
-    const deleted = await service.deleteRequest(request.id);
-
-    expect(ebookReadarr.deleteBookFile).toHaveBeenCalledWith(700);
-    expect(ebookReadarr.unmonitorRequestedBook).toHaveBeenCalledWith(101);
-    expect(ebookReadarr.triggerBookSearch).not.toHaveBeenCalled();
-    expect(deleted.status).toBe("not-monitored");
-    expect(deleted.statusMessage).toContain("stopped monitoring");
-    expect(deleted.matchedFilePath).toBeNull();
-    expect(deleted.lastDeliveryMessage).toBeNull();
-  });
-
-  it("marks the request as not monitored even when Readarr no longer has the book", async () => {
-    const { service, ebookReadarr, seedRequest } = makeDeps();
-    const request = seedRequest({
-      status: "available",
-      statusMessage: "Book found in watched folder.",
-      matchedFilePath: "C:\\Books\\Missing.epub",
-      matchedAt: FIXED_TIME,
-    });
-    ebookReadarr.getBookFiles.mockRejectedValueOnce(
-      new ReadarrApiError("Missing from Readarr.", 404),
-    );
-
-    const deleted = await service.deleteRequest(request.id);
-
-    expect(ebookReadarr.deleteBookFile).not.toHaveBeenCalled();
-    expect(ebookReadarr.unmonitorRequestedBook).not.toHaveBeenCalled();
-    expect(deleted.status).toBe("not-monitored");
-    expect(deleted.statusMessage).toContain("reset to Not Monitored");
-    expect(deleted.readarrBookId).toBeNull();
-    expect(deleted.matchedFilePath).toBeNull();
-  });
-
-  it("can reset a local-only request without calling Readarr", async () => {
+  it.each(["ebook", "audiobook"] as const)("archives %s without deleting shared files or unmonitoring", async (requestFormat) => {
     const { service, ebookReadarr, audiobookReadarr, seedRequest } = makeDeps();
-    const request = seedRequest({
-      status: "failed",
-      statusMessage: "Readarr said no.",
-      readarrAuthorId: null,
-      readarrBookId: null,
-      readarrEditionId: null,
-      notes: "The request intent was saved locally even though Readarr could not finish it.",
-    });
-
-    const deleted = await service.deleteRequest(request.id);
-
-    expect(ebookReadarr.getBookFiles).not.toHaveBeenCalled();
-    expect(ebookReadarr.unmonitorRequestedBook).not.toHaveBeenCalled();
-    expect(audiobookReadarr.unmonitorRequestedBook).not.toHaveBeenCalled();
-    expect(deleted.status).toBe("not-monitored");
-    expect(deleted.statusMessage).toContain("reset to Not Monitored");
-    expect(deleted.readarrBookId).toBeNull();
-    expect(deleted.notes).toBeNull();
+    const request = seedRequest({ requestFormat, status: "available", matchedFilePath: "/books/book.epub" });
+    const otherReader = seedRequest({ userId: 2, requestFormat, status: "available" });
+    const removed = await service.deleteRequest(request.id);
+    expect(removed.status).toBe("not-monitored");
+    expect(removed.statusMessage).toContain("Removed from your list");
+    expect(removed.matchedFilePath).toBeNull();
+    for (const backend of [ebookReadarr, audiobookReadarr]) {
+      expect(backend.getBookFiles).not.toHaveBeenCalled();
+      expect(backend.deleteBookFile).not.toHaveBeenCalled();
+      expect(backend.unmonitorRequestedBook).not.toHaveBeenCalled();
+    }
+    expect((await service.listAllRequests()).map((entry) => entry.id)).toEqual([otherReader.id]);
   });
 
-  it("supports deleting audiobook requests too", async () => {
-    const { service, audiobookReadarr, seedRequest } = makeDeps();
-    const request = seedRequest({
-      requestFormat: "audiobook",
-    });
+  it("can remove a linked request while Readarr is unconfigured", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    ebookReadarr.isConfigured.mockReturnValue(false);
+    const request = seedRequest();
+    expect((await service.deleteRequest(request.id)).status).toBe("not-monitored");
+    expect(ebookReadarr.unmonitorRequestedBook).not.toHaveBeenCalled();
+  });
 
-    const deleted = await service.deleteRequest(request.id);
-
-    expect(audiobookReadarr.unmonitorRequestedBook).toHaveBeenCalledWith(101);
-    expect(deleted.status).toBe("not-monitored");
+  it("does not revive a removed request on refresh", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    const request = seedRequest();
+    await service.deleteRequest(request.id);
+    expect((await service.syncRequest(request.id))?.status).toBe("not-monitored");
+    expect(ebookReadarr.getBookStatus).not.toHaveBeenCalled();
   });
 });
 
 describe("createRequestService.syncRequest", () => {
-  it("resets a missing Readarr book to not monitored", async () => {
+  it("does not display an unrelated book when Readarr reuses an old numeric id", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    const request = seedRequest({ status: "searching" });
+    ebookReadarr.getBookStatus.mockResolvedValueOnce(makeBookStatus({ foreignBookId: "different-work", statistics: { bookFileCount: 1 } }));
+    const synced = await service.syncRequest(request.id);
+    expect(synced?.status).toBe("failed");
+    expect(synced?.readarrBookId).toBeNull();
+    expect(ebookReadarr.monitorRequestedBook).not.toHaveBeenCalled();
+  });
+  it("keeps a missing Readarr book visible with a retryable failure", async () => {
     const { service, ebookReadarr, seedRequest } = makeDeps();
     const request = seedRequest({
       status: "searching",
@@ -631,14 +586,14 @@ describe("createRequestService.syncRequest", () => {
       throw new Error("Expected syncRequest to return an updated request.");
     }
 
-    expect(synced.status).toBe("not-monitored");
-    expect(synced.statusMessage).toContain("reset to Not Monitored");
+    expect(synced.status).toBe("failed");
+    expect(synced.statusMessage).toContain("Try again");
     expect(synced.readarrBookId).toBeNull();
-    expect(synced.matchedFilePath).toBeNull();
-    expect(synced.lastDeliveryMessage).toBeNull();
+    expect(synced.matchedFilePath).toBe(MATCHED_FILE_PATH);
+    expect(synced.lastDeliveryMessage).toBe("Sent to Kindle.");
   });
 
-  it("shows unmonitored Readarr books as not monitored", async () => {
+  it("keeps unmonitored Readarr books visible with a retryable failure", async () => {
     const { service, ebookReadarr, seedRequest } = makeDeps();
     const request = seedRequest({
       status: "searching",
@@ -662,12 +617,31 @@ describe("createRequestService.syncRequest", () => {
       throw new Error("Expected syncRequest to return an updated request.");
     }
 
-    expect(synced.status).toBe("not-monitored");
+    expect(synced.status).toBe("failed");
     expect(synced.statusMessage).toContain("not monitored");
   });
 });
 
 describe("createRequestService list visibility", () => {
+  it("loads existing history without waiting for any Readarr call", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    const request = seedRequest({ updatedAt: "2020-01-01T00:00:00Z" });
+    expect(await service.listRequestsForUser(1)).toEqual([request]);
+    expect(await service.listAllRequests()).toEqual([request]);
+    expect(ebookReadarr.getBookStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not revive a request when an older refresh finishes after removal", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    const request = seedRequest();
+    let resolveStatus!: (status: MockBookStatus) => void;
+    ebookReadarr.getBookStatus.mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve; }));
+    const refresh = service.syncRequest(request.id);
+    await service.deleteRequest(request.id);
+    resolveStatus(makeBookStatus({ statistics: { bookFileCount: 1 } }));
+    expect((await refresh)?.status).toBe("not-monitored");
+    expect(await service.listRequestsForUser(1)).toEqual([]);
+  });
   it("hides not monitored requests from the household list", async () => {
     const { service, seedRequest } = makeDeps();
     const visible = seedRequest({
@@ -702,6 +676,34 @@ describe("createRequestService list visibility", () => {
 });
 
 describe("createRequestService.searchBooksForUser", () => {
+  it("only searches the selected format", async () => {
+    const { service, ebookReadarr, audiobookReadarr } = makeDeps();
+    audiobookReadarr.searchBooks.mockResolvedValueOnce([makeSelection()]);
+    const results = await service.searchBooksForUser(1, "Borrowers", { format: "audiobook" });
+    expect(results).toHaveLength(1);
+    expect(ebookReadarr.searchBooks).not.toHaveBeenCalled();
+    expect(results[0].actions.audiobook.source).toBeTruthy();
+  });
+
+  it("keeps results and reports a partial outage when the other format fails", async () => {
+    const { service, ebookReadarr, audiobookReadarr } = makeDeps();
+    ebookReadarr.searchBooks.mockResolvedValueOnce([makeSelection()]);
+    audiobookReadarr.searchBooks.mockRejectedValueOnce(new Error("Connection timed out."));
+    const onWarnings = vi.fn();
+    const results = await service.searchBooksForUser(1, "Borrowers", { onWarnings });
+    expect(results).toHaveLength(1);
+    expect(results[0].actions.audiobook.availabilityLabel).toBe("Search unavailable");
+    expect(onWarnings).toHaveBeenCalledWith([expect.stringContaining("Audiobook search is unavailable")]);
+  });
+
+  it("keeps active household requests ahead of newer archived entries", async () => {
+    const { service, ebookReadarr, seedRequest } = makeDeps();
+    seedRequest({ userId: 2, status: "available" });
+    seedRequest({ userId: 3, status: "not-monitored", updatedAt: "2026-04-01T00:00:00.000Z" });
+    ebookReadarr.searchBooks.mockResolvedValueOnce([makeSelection()]);
+    const results = await service.searchBooksForUser(1, "Borrowers");
+    expect(results[0].actions.ebook.availability).toBe("already-available");
+  });
   it("skips malformed Readarr lookup rows instead of failing the whole search", async () => {
     const { service, ebookReadarr } = makeDeps();
     const valid = makeSelection();
@@ -768,5 +770,52 @@ describe("createRequestService.searchBooksForUser", () => {
     expect(results[0]?.actions.audiobook.availability).toBe("unavailable");
     expect(results[0]?.actions.audiobook.availabilityLabel).toBe("No match found");
     expect(results[0]?.actions.audiobook.source).toBeNull();
+  });
+
+  it("uses the resolved Goodreads author search for both formats", async () => {
+    const { service, ebookReadarr, audiobookReadarr } = makeDeps();
+    const selection = makeSelection();
+    ebookReadarr.searchBooksByAuthor.mockResolvedValueOnce([selection]);
+    audiobookReadarr.searchBooksByAuthor.mockResolvedValueOnce([selection]);
+    const bookMatch = {
+      authorForeignId: "4721536",
+      targetTitle: "Prince of Thorns",
+      alternateTitles: ["Prince of Thorns"],
+    };
+
+    const results = await service.searchBooksForUser(1, "author:4721536", { bookMatch });
+
+    expect(results).toHaveLength(1);
+    expect(ebookReadarr.searchBooksByAuthor).toHaveBeenCalledWith(bookMatch);
+    expect(audiobookReadarr.searchBooksByAuthor).toHaveBeenCalledWith(bookMatch);
+    expect(ebookReadarr.searchBooks).not.toHaveBeenCalled();
+    expect(audiobookReadarr.searchBooks).not.toHaveBeenCalled();
+  });
+
+  it("displays the resolved title without changing either Readarr action source", async () => {
+    const { service, ebookReadarr, audiobookReadarr } = makeDeps();
+    const malformedTitle =
+      "TheName of theWind (Kingkiller Chronicles, Day 1)2nd (second) edition Text Only";
+    const ebookSelection = {
+      ...makeSelection(),
+      title: malformedTitle,
+    };
+    const audiobookSelection = {
+      ...makeSelection(),
+      title: "The Name of the Wind",
+    };
+    ebookReadarr.searchBooksByAuthor.mockResolvedValueOnce([ebookSelection]);
+    audiobookReadarr.searchBooksByAuthor.mockResolvedValueOnce([audiobookSelection]);
+    const bookMatch = {
+      authorForeignId: "108424",
+      targetTitle: "The Name of the Wind",
+    };
+
+    const results = await service.searchBooksForUser(1, "author:108424", { bookMatch });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.title).toBe("The Name of the Wind");
+    expect(results[0]?.actions.ebook.source?.title).toBe(malformedTitle);
+    expect(results[0]?.actions.audiobook.source?.title).toBe("The Name of the Wind");
   });
 });

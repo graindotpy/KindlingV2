@@ -46,11 +46,11 @@ const createBodySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request);
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   ensureDefaultUsers();
 
@@ -82,11 +82,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request, { mutation: true });
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   ensureDefaultUsers();
 

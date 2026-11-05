@@ -223,8 +223,8 @@ function encodeSession(payload: SessionPayload, secret: string) {
 }
 
 function decodeSession(token: string, secret: string) {
-  const [encodedPayload, signature] = token.split(".", 2);
-  if (!encodedPayload || !signature) {
+  const [encodedPayload, signature, extra] = token.split(".");
+  if (!encodedPayload || !signature || extra !== undefined) {
     return null;
   }
 
@@ -238,7 +238,7 @@ function decodeSession(token: string, secret: string) {
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as SessionPayload;
 
-    if (!payload.exp || payload.exp <= Date.now()) {
+    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp) || payload.exp <= Date.now()) {
       return null;
     }
 
@@ -260,13 +260,20 @@ function readCookieValue(request: Request, key: string) {
     return null;
   }
 
-  return decodeURIComponent(match.slice(key.length + 1));
+  try {
+    return decodeURIComponent(match.slice(key.length + 1));
+  } catch {
+    return null;
+  }
 }
 
 function sameOrigin(request: Request) {
+  if (request.headers.get("sec-fetch-site") === "cross-site") {
+    return false;
+  }
   const origin = getRequestOriginHeader(request);
   if (!origin) {
-    return true;
+    return !request.headers.has("origin");
   }
 
   if (isTrustedOrigin(origin)) {
@@ -378,6 +385,10 @@ export function getSessionStatus(request: Request) {
 }
 
 export function requireApiSession(request: Request, options: ApiSessionOptions = {}) {
+  const originError = options.mutation ? requireSameOrigin(request) : null;
+  if (originError) {
+    return originError;
+  }
   const status = getSessionStatus(request);
 
   if (!status.configured) {
@@ -395,15 +406,6 @@ export function requireApiSession(request: Request, options: ApiSessionOptions =
     );
   }
 
-  if (options.mutation && !sameOrigin(request)) {
-    return NextResponse.json(
-      {
-        message: "Cross-site request blocked.",
-      },
-      { status: 403 },
-    );
-  }
-
   if (!status.authenticated) {
     return NextResponse.json(
       {
@@ -415,4 +417,11 @@ export function requireApiSession(request: Request, options: ApiSessionOptions =
   }
 
   return null;
+}
+
+export function requireSameOrigin(request: Request) {
+  return sameOrigin(request) ? null : NextResponse.json(
+    { message: "Cross-site request blocked." },
+    { status: 403 },
+  );
 }

@@ -8,11 +8,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  ensureBackgroundServices();
   const authError = requireApiSession(request);
   if (authError) {
     return authError;
   }
+  ensureBackgroundServices();
 
   ensureDefaultUsers();
 

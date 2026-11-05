@@ -57,15 +57,27 @@ export function getDb() {
   const config = getAppConfig();
   fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 
-  database = new Database(config.databasePath);
-  database.pragma("foreign_keys = ON");
-  database.pragma("journal_mode = WAL");
-
-  applyMigrations(database);
+  const connection = new Database(config.databasePath);
+  try {
+    connection.pragma("busy_timeout = 10000");
+    connection.pragma("foreign_keys = ON");
+    connection.pragma("journal_mode = WAL");
+    // Serialize discovery as well as execution when web and worker start together.
+    connection.transaction(() => applyMigrations(connection)).immediate();
+    database = connection;
+  } catch (error) {
+    connection.close();
+    throw error;
+  }
 
   return database;
 }
 
 export function initializeDatabase() {
   return getDb();
+}
+
+export function closeDatabase() {
+  database?.close();
+  database = null;
 }

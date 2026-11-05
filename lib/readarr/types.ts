@@ -8,6 +8,9 @@ export type ReadarrEdition = {
   id?: number;
   bookId?: number;
   foreignEditionId?: string | null;
+  isbn?: string | null;
+  isbn13?: string | null;
+  asin?: string | null;
   title?: string | null;
   language?: string | null;
   format?: string | null;

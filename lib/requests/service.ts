@@ -9,6 +9,7 @@ import {
   pickBestCoverUrl,
   pickPreferredEditionId,
   ReadarrApiError,
+  type ReadarrAuthorBookSearch,
   type ReadarrService,
 } from "@/lib/readarr/service";
 import type { ReadarrLookupBook } from "@/lib/readarr/types";
@@ -293,26 +294,6 @@ function buildLinkedReadarrPatch(
   };
 }
 
-function buildDeleteRequestStatusMessage(options: {
-  deletedExistingFile: boolean;
-  hadReadarrBook: boolean;
-  readarrBookMissing: boolean;
-}) {
-  if (options.readarrBookMissing) {
-    return "Readarr no longer has this book, so the request was reset to Not Monitored.";
-  }
-
-  if (options.deletedExistingFile) {
-    return "Readarr deleted the existing file and stopped monitoring this book.";
-  }
-
-  if (options.hadReadarrBook) {
-    return "Readarr stopped monitoring this book.";
-  }
-
-  return "This request was reset to Not Monitored.";
-}
-
 function getInitialSearchQueueMessage(format: BookRequestFormat) {
   return format === "audiobook"
     ? "Your audiobook request has been saved. Kindling will try automatic search in about 1 minute."
@@ -414,8 +395,8 @@ function matchesRequestSelection(
     return true;
   }
 
-  if (request.foreignBookId && result.foreignBookId === request.foreignBookId) {
-    return true;
+  if (request.foreignBookId && result.foreignBookId) {
+    return result.foreignBookId === request.foreignBookId;
   }
 
   if (request.foreignEditionId && result.foreignEditionId === request.foreignEditionId) {
@@ -432,11 +413,12 @@ function hasActiveQueueItem(status: ReadarrBookStatus) {
   return status.queueItems.some((item) => item.bookId === status.book.id);
 }
 
-function hasConfirmedSearchActivity(status: ReadarrBookStatus) {
+function hasConfirmedSearchActivity(status: ReadarrBookStatus, request: BookRequestRecord) {
   return (
     (status.book.statistics?.bookFileCount ?? 0) > 0 ||
     hasActiveQueueItem(status) ||
-    Boolean(status.book.lastSearchTime)
+    (status.book.monitored !== false && Boolean(status.book.lastSearchTime) &&
+      new Date(status.book.lastSearchTime!).getTime() >= new Date(request.requestedAt).getTime())
   );
 }
 
@@ -454,6 +436,10 @@ function buildRequestLookup(records: BookRequestRecord[]) {
 
     if (!blocksNewRequest(current.status) && blocksNewRequest(request.status)) {
       lookup.set(key, request);
+      continue;
+    }
+
+    if (blocksNewRequest(current.status) && !blocksNewRequest(request.status)) {
       continue;
     }
 
@@ -546,8 +532,23 @@ export function createRequestService(
     maxSearchAttempts: partialDeps.maxSearchAttempts ?? AUTOMATIC_SEARCH_MAX_ATTEMPTS,
   };
 
+  function updateInProgressRequest(requestId: number, patch: Partial<BookRequestRecord>) {
+    const current = deps.requestsRepo.findById(requestId);
+    if (!current || current.status === "not-monitored") return current;
+    return deps.requestsRepo.update(requestId, patch);
+  }
+
   function getReadarrForFormat(format: BookRequestFormat) {
     return deps.readarr[format];
+  }
+
+  async function getVerifiedBookStatus(request: BookRequestRecord) {
+    const status = await getReadarrForFormat(request.requestFormat).getBookStatus(request.readarrBookId!);
+    if (request.foreignBookId && status.book.foreignBookId !== request.foreignBookId) {
+      // Local numeric IDs can be reused after rebuilding a Readarr database.
+      throw new ReadarrApiError("The linked Readarr book has changed.", 404);
+    }
+    return status;
   }
 
   function clearSearchRetryStatePatch(updatedAt: string) {
@@ -567,7 +568,7 @@ export function createRequestService(
   ) {
     const timestamp = options.timestamp ?? deps.now();
     return (
-      deps.requestsRepo.update(
+      updateInProgressRequest(
         request.id,
         buildQueuedSearchRetryPatch(
           request.requestFormat,
@@ -589,7 +590,7 @@ export function createRequestService(
   ) {
     const timestamp = options.timestamp ?? deps.now();
     return (
-      deps.requestsRepo.update(
+      updateInProgressRequest(
         request.id,
         buildFailedSearchRetryPatch(
           request.requestFormat,
@@ -602,7 +603,9 @@ export function createRequestService(
 
   async function findLookupBookForRequest(request: BookRequestRecord) {
     const readarr = getReadarrForFormat(request.requestFormat);
-    const query = `${request.requestedTitle} ${request.requestedAuthor}`.trim();
+    const query = request.foreignBookId && /^\d+$/.test(request.foreignBookId)
+      ? `work:${request.foreignBookId}`
+      : `${request.requestedTitle} ${request.requestedAuthor}`.trim();
     if (!query) {
       return null;
     }
@@ -613,7 +616,7 @@ export function createRequestService(
 
   function clearStaleReadarrLink(request: BookRequestRecord, updatedAt: string) {
     return (
-      deps.requestsRepo.update(request.id, {
+      updateInProgressRequest(request.id, {
         readarrBookId: null,
         readarrEditionId: null,
         lastSyncedAt: updatedAt,
@@ -630,8 +633,8 @@ export function createRequestService(
     const mapped = mapReadarrBookToFriendlyStatus(liveStatus.book, liveStatus.queueItems, "searching");
 
     return (
-      deps.requestsRepo.update(request.id, {
-        status: mapped.status,
+      updateInProgressRequest(request.id, {
+        status: mapped.status === "not-monitored" ? "failed" : mapped.status,
         statusMessage: mapped.message,
         foreignAuthorId: liveStatus.book.author.foreignAuthorId ?? request.foreignAuthorId,
         foreignBookId: liveStatus.book.foreignBookId ?? request.foreignBookId,
@@ -666,18 +669,14 @@ export function createRequestService(
     }
 
     const linked =
-      deps.requestsRepo.update(
+      updateInProgressRequest(
         request.id,
         buildLinkedReadarrPatch(request, book, timestamp, {
           lastSyncedAt: timestamp,
         }),
       ) ?? request;
 
-    try {
-      await readarr.monitorRequestedBook(book.id);
-    } catch {
-      // Readarr already has the book; retry cycles can still reconcile and trigger search.
-    }
+    await readarr.monitorRequestedBook(book.id);
 
     return linked;
   }
@@ -689,8 +688,8 @@ export function createRequestService(
 
     if (current.readarrBookId) {
       try {
-        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
-        if (hasConfirmedSearchActivity(liveStatus)) {
+        const liveStatus = await getVerifiedBookStatus(current);
+        if (hasConfirmedSearchActivity(liveStatus, current)) {
           return mapConfirmedSearchStatus(current, liveStatus, startedAt);
         }
       } catch (error) {
@@ -713,8 +712,8 @@ export function createRequestService(
       }
 
       try {
-        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
-        if (hasConfirmedSearchActivity(liveStatus)) {
+        const liveStatus = await getVerifiedBookStatus(current);
+        if (hasConfirmedSearchActivity(liveStatus, current)) {
           return mapConfirmedSearchStatus(current, liveStatus, startedAt);
         }
       } catch (error) {
@@ -731,14 +730,15 @@ export function createRequestService(
       }
 
       try {
+        await readarr.monitorRequestedBook(current.readarrBookId);
         await readarr.triggerBookSearch(current.readarrBookId);
       } catch (error) {
         lastErrorMessage = getAutomaticSearchErrorMessage(error, current.requestFormat);
       }
 
       try {
-        const liveStatus = await readarr.getBookStatus(current.readarrBookId);
-        if (hasConfirmedSearchActivity(liveStatus)) {
+        const liveStatus = await getVerifiedBookStatus(current);
+        if (hasConfirmedSearchActivity(liveStatus, current)) {
           return mapConfirmedSearchStatus(current, liveStatus, startedAt);
         }
       } catch (error) {
@@ -799,6 +799,10 @@ export function createRequestService(
   }
 
   async function syncSingleRequest(record: BookRequestRecord) {
+    // Archived entries must never be revived by a manual refresh or an in-flight cycle.
+    if (record.status === "not-monitored") {
+      return record;
+    }
     const readarr = getReadarrForFormat(record.requestFormat);
 
     if (!record.readarrBookId || !readarr.isConfigured()) {
@@ -806,18 +810,12 @@ export function createRequestService(
     }
 
     try {
-      const { book, queueItems } = await readarr.getBookStatus(record.readarrBookId);
+      const { book, queueItems } = await getVerifiedBookStatus(record);
       const mapped = mapReadarrBookToFriendlyStatus(book, queueItems, record.status);
 
-      if (mapped.status === "not-monitored") {
-        return updateRequestAsNotMonitored(record, {
-          message: mapped.message,
-        });
-      }
-
       const updatedAt = deps.now();
-      return deps.requestsRepo.update(record.id, {
-        status: mapped.status,
+      return updateInProgressRequest(record.id, {
+        status: mapped.status === "not-monitored" ? "failed" : mapped.status,
         statusMessage: mapped.message,
         coverUrl: pickBestCoverUrl(book) ?? record.coverUrl,
         readarrAuthorId: book.author.id ?? record.readarrAuthorId,
@@ -830,13 +828,14 @@ export function createRequestService(
       });
     } catch (error) {
       if (error instanceof ReadarrApiError && error.status === 404) {
-        return updateRequestAsNotMonitored(record, {
-          message: buildDeleteRequestStatusMessage({
-            deletedExistingFile: false,
-            hadReadarrBook: true,
-            readarrBookMissing: true,
-          }),
-          readarrBookMissing: true,
+        return updateInProgressRequest(record.id, {
+          status: "failed",
+          statusMessage: "This book is no longer in Readarr. Try again to send the request again.",
+          readarrBookId: null,
+          readarrEditionId: null,
+          ...clearSearchRetryState(),
+          lastSyncedAt: deps.now(),
+          updatedAt: deps.now(),
         });
       }
 
@@ -845,7 +844,7 @@ export function createRequestService(
   }
 
   async function syncStaleRequests(records: BookRequestRecord[]) {
-    const staleBefore = Date.now() - deps.syncIntervalMs;
+    const staleBefore = new Date(deps.now()).getTime() - deps.syncIntervalMs;
 
     for (const request of records) {
       const readarr = getReadarrForFormat(request.requestFormat);
@@ -870,60 +869,10 @@ export function createRequestService(
       throw new Error("We could not find that request.");
     }
 
-    const readarr = getReadarrForFormat(request.requestFormat);
-    const hasReadarrBook = Boolean(request.readarrBookId);
-
-    if (hasReadarrBook && !readarr.isConfigured()) {
-      throw new Error("Readarr is not configured yet, so Kindling cannot delete this request.");
-    }
-
-    let deletedExistingFile = false;
-    let readarrBookMissing = false;
-
-    if (request.readarrBookId) {
-      try {
-        const bookFiles = await readarr.getBookFiles(request.readarrBookId);
-
-        for (const bookFile of bookFiles) {
-          try {
-            await readarr.deleteBookFile(bookFile.id);
-            deletedExistingFile = true;
-          } catch (error) {
-            if (error instanceof ReadarrApiError && error.status === 404) {
-              continue;
-            }
-
-            throw error;
-          }
-        }
-      } catch (error) {
-        if (error instanceof ReadarrApiError && error.status === 404) {
-          readarrBookMissing = true;
-        } else {
-          throw error;
-        }
-      }
-
-      if (!readarrBookMissing) {
-        try {
-          await readarr.unmonitorRequestedBook(request.readarrBookId);
-        } catch (error) {
-          if (error instanceof ReadarrApiError && error.status === 404) {
-            readarrBookMissing = true;
-          } else {
-            throw error;
-          }
-        }
-      }
-    }
-
+    // A household may share the same Readarr book. Removing a personal entry
+    // must never delete their files or change another reader's monitoring.
     return updateRequestAsNotMonitored(request, {
-      message: buildDeleteRequestStatusMessage({
-        deletedExistingFile,
-        hadReadarrBook: hasReadarrBook,
-        readarrBookMissing,
-      }),
-      readarrBookMissing,
+      message: "Removed from your list. The book remains in the household library.",
     });
   }
 
@@ -934,19 +883,24 @@ export function createRequestService(
         throw new Error("We could not find that family member.");
       }
 
-      const existing = deps.requestsRepo.listByUser(userId);
-      await syncStaleRequests(existing);
-
+      // Read history immediately, even when Readarr is offline. The worker
+      // refreshes statuses independently of opening the page.
       return deps.requestsRepo.listByUser(userId).filter(isVisibleRequest);
     },
 
     async listAllRequests() {
-      const existing = deps.requestsRepo.listAll();
-      await syncStaleRequests(existing);
       return deps.requestsRepo.listAll().filter(isVisibleRequest);
     },
 
-    async searchBooksForUser(userId: number, query: string) {
+    async searchBooksForUser(
+      userId: number,
+      query: string,
+      options: {
+        format?: BookRequestFormat;
+        onWarnings?: (warnings: string[]) => void;
+        bookMatch?: ReadarrAuthorBookSearch | null;
+      } = {},
+    ) {
       const user = deps.usersRepo.getById(userId);
       if (!user) {
         throw new Error("We could not find that family member.");
@@ -957,7 +911,8 @@ export function createRequestService(
         return [] as SearchResultItem[];
       }
 
-      if (!REQUEST_FORMATS.some((format) => getReadarrForFormat(format).isConfigured())) {
+      const formats = options.format ? [options.format] : REQUEST_FORMATS;
+      if (!formats.some((format) => getReadarrForFormat(format).isConfigured())) {
         throw new Error("Readarr is not configured yet on this computer.");
       }
 
@@ -979,9 +934,10 @@ export function createRequestService(
         },
       };
       let searchError: Error | null = null;
+      const warnings: string[] = [];
 
       await Promise.all(
-        REQUEST_FORMATS.map(async (format) => {
+        formats.map(async (format) => {
           if (!searchStateByFormat[format].configured) {
             return;
           }
@@ -989,11 +945,28 @@ export function createRequestService(
           const readarr = getReadarrForFormat(format);
 
           try {
-            resultsByFormat[format] = (await readarr.searchBooks(trimmedQuery)).filter(
-              hasSearchResultIdentity,
-            );
+            if (options.bookMatch && readarr.searchBooksByAuthorWithDiagnostics) {
+              const result = await readarr.searchBooksByAuthorWithDiagnostics(options.bookMatch);
+              resultsByFormat[format] = result.books.filter(hasSearchResultIdentity);
+              warnings.push(...result.warnings);
+            } else if (options.bookMatch && readarr.searchBooksByAuthor) {
+              resultsByFormat[format] = (
+                await readarr.searchBooksByAuthor(options.bookMatch)
+              ).filter(hasSearchResultIdentity);
+            } else if (readarr.searchBooksWithDiagnostics) {
+              const result = await readarr.searchBooksWithDiagnostics(trimmedQuery);
+              resultsByFormat[format] = result.books.filter(hasSearchResultIdentity);
+              warnings.push(...result.warnings);
+            } else {
+              resultsByFormat[format] = (await readarr.searchBooks(trimmedQuery)).filter(
+                hasSearchResultIdentity,
+              );
+            }
           } catch (error) {
             searchStateByFormat[format].searchFailed = true;
+            warnings.push(`${format === "ebook" ? "Ebook" : "Audiobook"} search is unavailable. ${
+              error instanceof Error ? error.message : "Please try again shortly."
+            }`);
             if (!searchError) {
               searchError =
                 error instanceof Error
@@ -1003,6 +976,7 @@ export function createRequestService(
           }
         }),
       );
+      options.onWarnings?.([...new Set(warnings)]);
 
       const mergedResults = new Map<
         string,
@@ -1046,10 +1020,12 @@ export function createRequestService(
           return [];
         }
 
+        const canonicalTitle = options.bookMatch?.targetTitle.trim();
+
         return [
           {
             fingerprint,
-            title: source.title,
+            title: canonicalTitle || source.title,
             author: getAuthorName(source) ?? "Unknown author",
             year: extractYear(source.releaseDate),
             coverUrl: pickBestCoverUrl(source),
@@ -1106,7 +1082,7 @@ export function createRequestService(
       }
 
       if (!readarr.isConfigured()) {
-        return deps.requestsRepo.update(created.id, {
+        return updateInProgressRequest(created.id, {
           status: "failed",
           statusMessage:
             requestFormat === "audiobook"
@@ -1128,18 +1104,14 @@ export function createRequestService(
         }
 
         const linkedRequest =
-          deps.requestsRepo.update(
+          updateInProgressRequest(
             created.id,
             buildLinkedReadarrPatch(created, book, deps.now(), {
               lastSyncedAt: deps.now(),
             }),
           ) ?? created;
 
-        try {
-          await readarr.monitorRequestedBook(book.id);
-        } catch {
-          // Readarr already received the book add, so keep the local request linked.
-        }
+        await readarr.monitorRequestedBook(book.id);
 
         return queueSearchRetry(linkedRequest, {
           attemptCount: 0,
@@ -1163,12 +1135,20 @@ export function createRequestService(
       return updates;
     },
 
+    async syncActiveRequests() {
+      await syncStaleRequests(deps.requestsRepo.listAll());
+    },
+
     async syncRequest(requestId: number) {
       const request = deps.requestsRepo.findById(requestId);
       if (!request) {
         throw new Error("We could not find that request.");
       }
 
+      if (request.status === "failed" && getReadarrForFormat(request.requestFormat).isConfigured()) {
+        const queued = queueSearchRetry(request, { attemptCount: 0 });
+        return processQueuedSearchRetry(queued);
+      }
       return syncSingleRequest(request);
     },
     deleteRequest,

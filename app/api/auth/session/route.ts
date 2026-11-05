@@ -5,6 +5,7 @@ import {
   createSignedOutResponse,
   getSessionStatus,
   isAuthConfigured,
+  requireSameOrigin,
   verifyAdminPassword,
 } from "@/lib/auth";
 
@@ -12,7 +13,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
-  password: z.string().min(1, "Please enter the Kindling password."),
+  password: z.string().min(1, "Please enter the Kindling password.").max(1024),
 });
 
 export async function GET(request: Request) {
@@ -20,6 +21,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const originError = requireSameOrigin(request);
+  if (originError) return originError;
   if (!isAuthConfigured() && process.env.NODE_ENV === "production") {
     return NextResponse.json(
       {
@@ -51,5 +54,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const originError = requireSameOrigin(request);
+  if (originError) return originError;
   return createSignedOutResponse(request);
 }

@@ -6,6 +6,7 @@ import {
   recordWorkerError,
   recordWorkerHeartbeat,
   recordWorkerStarted,
+  recordWorkerStopped,
   recordWorkerSuccess,
 } from "@/lib/worker-status";
 
@@ -13,6 +14,8 @@ type WatcherState = {
   started: boolean;
   running: boolean;
   timer: NodeJS.Timeout | null;
+  heartbeatTimer: NodeJS.Timeout | null;
+  activeCycle: Promise<void> | null;
 };
 
 declare global {
@@ -25,6 +28,8 @@ function getWatcherState(): WatcherState {
       started: false,
       running: false,
       timer: null,
+      heartbeatTimer: null,
+      activeCycle: null,
     };
   }
 
@@ -39,7 +44,7 @@ export function ensureBackgroundServices() {
   startBackgroundWorker();
 }
 
-export function startBackgroundWorker() {
+export function startBackgroundWorker(onFatalError?: (error: unknown) => void) {
   const state = getWatcherState();
   if (state.started) {
     return;
@@ -48,14 +53,6 @@ export function startBackgroundWorker() {
   initializeDatabase();
 
   const runCycle = async () => {
-    if (state.running) {
-      return;
-    }
-
-    state.running = true;
-    const startedAt = new Date().toISOString();
-    recordWorkerHeartbeat(startedAt);
-
     try {
       const failures: string[] = [];
 
@@ -67,6 +64,14 @@ export function startBackgroundWorker() {
         );
       }
 
+      if (!state.started) return;
+      try {
+        await createRequestService().syncActiveRequests();
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "Request status update failed.");
+      }
+
+      if (!state.started) return;
       try {
         await createDeliveryService().runAutomaticWatchCycle();
       } catch (error) {
@@ -76,6 +81,7 @@ export function startBackgroundWorker() {
       }
 
       if (failures.length > 0) {
+        console.error("[kindling worker]", failures.join(" | "));
         recordWorkerError(
           new Date().toISOString(),
           failures.join(" | "),
@@ -85,27 +91,58 @@ export function startBackgroundWorker() {
       }
     } finally {
       state.running = false;
+      state.activeCycle = null;
     }
   };
 
-  state.started = true;
-  recordWorkerStarted(new Date().toISOString());
-  void runCycle();
+  const handleFatalError = (error: unknown) => {
+    console.error("[kindling worker] Worker failed:", error);
+    void stopBackgroundWorker().catch((shutdownError) => {
+      console.error("[kindling worker] Could not record shutdown:", shutdownError);
+    });
+    onFatalError?.(error);
+  };
 
-  state.timer = setInterval(() => {
-    void runCycle();
-  }, getAppConfig().delivery.scanIntervalMs);
+  const scheduleCycle = () => {
+    if (!state.started || state.running) return;
+    state.running = true;
+    state.activeCycle = runCycle();
+    // Database/status-write failures must terminate the standalone worker so its
+    // supervisor can recover it, rather than leaving an unhandled rejection.
+    void state.activeCycle.catch(handleFatalError);
+  };
+
+  recordWorkerStarted(new Date().toISOString());
+  state.started = true;
+  scheduleCycle();
+
+  state.timer = setInterval(scheduleCycle, getAppConfig().delivery.scanIntervalMs);
+  // A large library or a slow SMTP server can keep one cycle busy for minutes.
+  // Heartbeats reflect process health independently of whether that cycle finished.
+  state.heartbeatTimer = setInterval(() => {
+    try {
+      recordWorkerHeartbeat(new Date().toISOString());
+    } catch (error) {
+      handleFatalError(error);
+    }
+  }, 15_000);
 
   state.timer.unref?.();
+  state.heartbeatTimer.unref?.();
 }
 
-export function stopBackgroundWorker() {
+export async function stopBackgroundWorker() {
   const state = getWatcherState();
   if (state.timer) {
     clearInterval(state.timer);
     state.timer = null;
   }
+  if (state.heartbeatTimer) {
+    clearInterval(state.heartbeatTimer);
+    state.heartbeatTimer = null;
+  }
 
   state.started = false;
-  state.running = false;
+  await state.activeCycle;
+  recordWorkerStopped(new Date().toISOString());
 }

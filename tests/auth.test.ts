@@ -29,6 +29,24 @@ describe("requireApiSession", () => {
     expect(response?.status).toBe(401);
   });
 
+  it("treats malformed session cookie encoding as unauthenticated", () => {
+    const response = requireApiSession(new Request("http://localhost/api/users", {
+      headers: { cookie: "kindling_session=%E0%A4%A" },
+    }));
+    expect(response?.status).toBe(401);
+  });
+
+  it("rejects an invalid origin and cross-site fetch metadata", () => {
+    const cases: Record<string, string>[] = [{ origin: "garbage" }, { origin: "null" }, { "sec-fetch-site": "cross-site" }];
+    for (const headers of cases) {
+      const response = requireApiSession(new Request("http://localhost/api/users", {
+        method: "POST",
+        headers: { ...headers, cookie: getSessionCookie() },
+      }), { mutation: true });
+      expect(response?.status).toBe(403);
+    }
+  });
+
   it("accepts requests with a valid session cookie", () => {
     const request = new Request("http://localhost/api/requests", {
       headers: {

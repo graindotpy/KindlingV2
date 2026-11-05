@@ -1,245 +1,254 @@
 # Kindling
 
-Kindling is a small, family-friendly web app that sits in front of Readarr. It keeps the experience book-first and calm:
+A household book request app for **two Readarr instances**: one for ebooks and one for audiobooks. Family members choose a profile, search for a book, and request the format they want. Kindling keeps request history in SQLite and can send downloaded EPUBs to Kindle by email.
 
-- View the books a family member has requested
-- Request a new EPUB or audiobook with one simple search flow
-- Keep local request history in SQLite even when Readarr is unreliable
-- Edit profile names and Kindle email addresses
-- Watch a folder tree and auto-send matched EPUBs to Kindle by SMTP
-- Manually send any matched EPUB to any configured Kindle from the household view
+For title and ISBN searches, Kindling uses Open Library to identify the intended work and its author's Goodreads ID, then searches Readarr with `author:<id>` and filters the returned catalogue back to that title. Ambiguous titles show a “Did you mean…” selector. If the author catalogue does not return a verified match, Kindling makes one bounded standard Readarr search using the user's original query and still verifies both title and Goodreads author ID. Explicit Goodreads/Readarr identifiers keep their direct lookup path, and Open Library failures fall back to Readarr's standard search with a visible warning.
 
-## Stack
+Docker now runs the web app and its background worker in **one container**, with one configuration file. Database migrations and initial profiles are created automatically. Existing requests, profiles and delivery settings are retained when the same data folder is mounted.
 
-- Next.js + React + TypeScript
-- Node.js route handlers for the internal API
-- SQLite via `better-sqlite3`
-- Thin Readarr v1 API integration with `X-Api-Key`
+See the [project review](docs/PROJECT_REVIEW.md) for the search fixes, interface changes, validation and remaining Readarr metadata limitations. Removing a request now removes it from the person's list while preserving the household's Readarr files and monitoring.
 
-## Windows Local Setup
+## Install on ZimaOS with Docker Compose
 
-1. Install Node.js 22 or newer.
-2. Copy `.env.example` to `.env.local`.
-3. Fill in at least:
+Use a persistent folder on your ZimaOS machine for this checkout, for example `/DATA/AppData/kindling`. The commands below run in that folder. Docker with Compose is required; Node.js is only needed when developing outside Docker.
 
-```env
-READARR_BASE_URL=http://localhost:8787
-READARR_API_KEY=your-readarr-api-key
-AUDIOBOOK_READARR_BASE_URL=http://localhost:8788
-AUDIOBOOK_READARR_API_KEY=your-audiobook-readarr-api-key
+1. Copy the example configuration:
+
+   ```sh
+   cp .env.example .env
+   ```
+
+2. Edit `.env`. Set these six values:
+
+   ```dotenv
+   KINDLING_ADMIN_PASSWORD='a-long-household-password'
+   KINDLING_SESSION_SECRET='a-random-secret-at-least-32-characters-long'
+   READARR_BASE_URL=http://192.168.1.50:8787
+   READARR_API_KEY=your-ebook-readarr-api-key
+   AUDIOBOOK_READARR_BASE_URL=http://192.168.1.50:8788
+   AUDIOBOOK_READARR_API_KEY=your-audiobook-readarr-api-key
+   ```
+
+   Replace the example address with your server's LAN address and the actual published Readarr ports. **`localhost` inside the Kindling container points to Kindling**, so it will not reach another container or your ZimaOS host. Include Readarr's URL base if one is configured, such as `http://192.168.1.50:8787/readarr`. Single-quote secrets containing `$` or `#` in `.env`.
+
+   To generate a session secret using Docker:
+
+   ```sh
+   docker run --rm node:22-bookworm-slim node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+   ```
+
+3. Prepare the persistent folders. The app runs as UID/GID `1000:1000` by default:
+
+   ```sh
+   mkdir -p data watched-books
+   sudo chown -R 1000:1000 data
+   chmod 600 .env
+   ```
+
+   Only change ownership of Kindling's data directory. If your NAS uses different permissions, set `KINDLING_UID` and `KINDLING_GID` in `.env` to a user/group that can write the data directory and read your ebook library.
+
+4. Start Kindling:
+
+   ```sh
+   docker compose up -d --build
+   docker compose ps
+   ```
+
+   Open `http://<your-zimaos-ip>:3000`. The first build takes longer because it installs dependencies and compiles the app. The container should become healthy after startup. To change the port, add `KINDLING_PORT=3001` to `.env` and run `docker compose up -d` again.
+
+Use the household password to unlock the app. Existing profile names can be changed in the household settings. A fresh database initially contains Mum, Dad and Adam.
+
+### ZimaOS custom-app interface
+
+For an app tile managed from ZimaOS, first build the image on that machine:
+
+```sh
+docker build -t kindling:local .
 ```
 
-4. Optional: set `READARR_ROOT_FOLDER_PATH`, `READARR_QUALITY_PROFILE_ID`, and `READARR_METADATA_PROFILE_ID` if you do not want Kindling to fall back to the first available EPUB Readarr root folder/profile values.
-5. Optional: set `AUDIOBOOK_READARR_ROOT_FOLDER_PATH`, `AUDIOBOOK_READARR_QUALITY_PROFILE_ID`, and `AUDIOBOOK_READARR_METADATA_PROFILE_ID` if you want the audiobook Readarr to use specific root folder/profile values.
-6. Optional: set the SMTP values if you want Kindle delivery:
+Then import [`deploy/docker-compose.zimaos.yml`](deploy/docker-compose.zimaos.yml) through ZimaOS's custom-app interface. Fill in the Readarr URLs, keys, household password and session secret in the app settings. Adjust the host folder paths and icon URL to your server before installing and prepare the data folder permissions as above. This template uses your locally built image. No published Kindling image is provided. Choose either this installation method or the command-line Compose method to avoid two apps competing for the same port and database.
 
-```env
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USERNAME=your-smtp-user
-SMTP_PASSWORD=your-smtp-password
-SMTP_FROM_EMAIL=kindling@example.com
-SMTP_MAX_ATTACHMENT_BYTES=18874368
+The template follows the official [ZimaOS Compose and app metadata reference](https://www.zimaspace.com/docs/developer/app-store-compose-x-casaos).
+
+## Move an existing two-container installation
+
+1. Record your existing environment settings and the **actual host directory** mounted at `/app/data`. Preserve your ebook library mount as well.
+2. Stop both old containers (`kindling-web` and `kindling-worker`) in ZimaOS. Keep their data directory.
+3. With both stopped, copy the entire data directory to a backup location. Include `kindling.db-wal` and `kindling.db-shm` if present.
+4. Put the previous settings in `.env` or the new custom-app settings. For Compose, set `KINDLING_DATA_DIR=/absolute/path/to/existing/data` if it differs from `./data`. Set `KINDLING_BOOKS_DIR` to the existing ebook library path.
+5. Ensure the new container's UID/GID can write that data directory, then start the new container. It applies migrations before either application process starts.
+6. Confirm your household profiles and request history appear and check the connections in settings. Remove the old stopped containers only after verifying the new app.
+
+Do not run the old worker alongside the new container: both would process delivery and search jobs.
+
+## Kindle delivery
+
+Keep your current SMTP settings if delivery already works. To enable it on a fresh install, set `SMTP_HOST`, `SMTP_FROM_EMAIL`, and any required `SMTP_USERNAME` / `SMTP_PASSWORD` in `.env`. Port `587` with `SMTP_SECURE=false` is the default; use the settings supplied by your mail provider.
+
+Point `KINDLING_BOOKS_DIR` at the **host directory containing downloaded EPUBs**, for example:
+
+```dotenv
+KINDLING_BOOKS_DIR=/DATA/Media/Books
 ```
 
-7. Set the household access values before exposing Kindling anywhere beyond localhost:
+Recreate the container after changing its mounts. In Kindling's delivery settings, set the watched folder to `/watched-books`, the path **inside the container**. This mount is read-only: Kindling only needs to read books to attach them to email. Use the same container path as before if you need to preserve previously matched file paths, or rescan after changing it.
 
-```env
-KINDLING_ADMIN_PASSWORD=choose-a-strong-household-password
-KINDLING_SESSION_SECRET=use-a-long-random-secret
-```
+Add each person's Kindle email in household settings and approve the SMTP sender in Amazon's personal document settings. Automatic sending requires a sufficiently confident file match; manual sending is also available for matched EPUBs. Audiobooks remain in the audiobook Readarr instance and are not emailed to Kindle.
 
-8. Run the setup scripts:
+The default raw attachment limit is 18 MiB (`SMTP_MAX_ATTACHMENT_BYTES=18874368`) to leave room for email encoding. SMTP acceptance means the email was sent; Amazon controls final Kindle delivery.
+
+## Update, back up and restore
+
+### One-command ZimaOS deployment
+
+From Windows PowerShell in the repository, run:
 
 ```powershell
-npm install
-npm run db:migrate
-npm run db:seed
+.\deploy\Deploy-Kindling.ps1
 ```
 
-9. Start the app:
+The defaults target `admin@192.168.4.148`, `/DATA/AppData/kindling`, the `kindling` Compose service and the `kindling:local` image used by this installation. Override them when needed, for example:
 
 ```powershell
-npm run dev
+.\deploy\Deploy-Kindling.ps1 -Target admin@zima-host -RemoteAppDir /DATA/AppData/kindling
 ```
 
-10. Start the automatic delivery worker in a second terminal if you want watched-folder scanning:
+By default the script runs lint, type checking and unit tests, packages the current working tree, rejects private or generated files, verifies the uploaded SHA-256, and performs the deployment through one interactive SSH session. Use `-SkipChecks` only when that exact working tree has already passed the checks. `-DryRun -SkipChecks` exercises packaging and privacy validation without contacting the server.
 
-```powershell
-npm run worker
+On ZimaOS the helper serializes deployments, builds an immutable candidate without replacing the running image, then takes an online SQLite backup and a root-only `.env` backup immediately before activation. It preserves the running image by ID, recreates the existing Compose service and waits for the container's internal app/database/worker health check. If activation fails, it restores the previous image automatically. When database migrations changed, it also restores the pre-deployment database; failed-release database files are retained for investigation. The script never changes the live `.env`, prunes Docker data or packages local secrets.
+
+Successful deployments intentionally retain their release/rollback image tags and pre-deployment backups. Review retention periodically; the deployer does not guess which recovery points are safe to delete.
+
+Password-based SSH can prompt once for the upload, once for the remote session and once for `sudo`. Installing an SSH public key for `admin` removes the first two prompts while retaining the ZimaOS `sudo` boundary.
+
+### Back up while Kindling is running
+
+```sh
+docker compose exec kindling node dist/backup.cjs
 ```
 
-11. Open [http://localhost:3000](http://localhost:3000).
+The command prints a timestamped backup path under `/app/data/backups`. It uses SQLite's online backup API, including committed data in the write-ahead log. Copy this backup to another disk or machine, and separately keep a secure copy of `.env`. The database backup includes profiles, requests, settings and delivery history; ebook files live in your library and need their own backup.
 
+For a ZimaOS custom-app install, use `docker exec kindling node dist/backup.cjs` instead. Never copy only `kindling.db` while the application is running, because recent data may still be in its WAL file.
 
-## Docker Compose (ZimaOS-friendly)
+### Upgrade
 
-Kindling can run in Docker Compose with two containers:
+Make a backup first. Keep a copy or tag of the previous image if you need an easy rollback:
 
-- `kindling-web` for the Next.js UI/API
-- `kindling-worker` for watched-folder scanning and automatic Kindle delivery
+```sh
+docker image tag kindling:local kindling:previous
+```
 
-This repository includes `Dockerfile`, `.dockerignore`, and `docker-compose.yml`.
+Update the source checkout to the desired revision, then:
 
-### 1) Configure environment variables in ZimaOS
-
-ZimaOS can inject environment variables from the UI, so you do **not** need an `env_file` in compose.
-
-Set all required values in the UI for both services, especially:
-
-- `KINDLING_ADMIN_PASSWORD`
-- `KINDLING_SESSION_SECRET`
-- `KINDLING_TRUSTED_ORIGINS=https://kindling.grainserver.co.uk` if a reverse proxy or Cloudflare Access rewrites the incoming host/protocol
-- `READARR_BASE_URL`, `READARR_API_KEY`
-- `AUDIOBOOK_READARR_BASE_URL`, `AUDIOBOOK_READARR_API_KEY` (if used)
-- SMTP variables (if using Kindle email delivery)
-
-The compose file keeps only non-secret defaults:
-
-- `DATABASE_PATH=/app/data/kindling.db`
-- `KINDLING_EMBEDDED_WORKER=false`
-
-### 2) Start the stack
-
-```bash
+```sh
 docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 kindling
 ```
 
-Then open `http://<your-server-ip>:3000`.
+For a custom-app install, rebuild `kindling:local` and recreate the app using that image in ZimaOS. Restarting an existing container alone does not replace its image. Configuration changes in `.env` also require `docker compose up -d` to recreate the container.
 
-### 3) Persistence
+### Restore or roll back
 
-- `./data:/app/data` persists SQLite data.
-- `./watched-books:/watched-books` should point at your real watch folder path.
+Stop Kindling first. Move its current database **and any matching `-wal` / `-shm` files** into a separate safety-copy folder. Copy the chosen backup to the configured database filename (normally `data/kindling.db`) and restore write permissions for the container user. Restart Kindling and check the household view.
 
-## Profiles
+If rolling back application code after a schema change, restore the database backup taken before that upgrade as well. To reuse the previous image with Compose, tag it as `kindling:local` and start with `docker compose up -d --no-build --force-recreate`.
 
-Kindling seeds a tiny local family list for v1:
+## Troubleshooting
 
-- Mum
-- Dad
-- Adam
+| Symptom | Check |
+| --- | --- |
+| Search reports Readarr unavailable | Check the correct LAN IP, port, API key and URL base for the selected format. Open that Readarr instance from another device on the same network. |
+| Readarr lookup fails despite a reachable instance | Readarr's metadata provider can fail independently of its web interface. Check the instance's own lookup and logs. Kindling reports that failure and keeps saved requests. |
+| A resolved search stalls in Readarr | Check the Readarr logs for `BookInfoProxy` and HTTP 429 backoffs. Kindling bounds the author lookup and makes one final standard search with the original query; it does not retry `/book/lookup` after that final attempt. |
+| Some books appear but an expected title is missing | Choose the matching Open Library title and author when prompted. Kindling then filters Readarr's author catalogue; Readarr still needs that work in its metadata results. |
+| Open Library warning appears | Kindling retries one temporary network/provider failure before falling back to Readarr. Check internet access from the container and run `docker logs --tail=100 kindling` for a sanitized reason such as `timeout`, `econnreset` or `http-429`; existing direct identifiers still work. |
+| Request is saved but cannot be added | Confirm that the target Readarr has a root folder, quality profile and metadata profile. Optional environment overrides must refer to that same instance. |
+| Container keeps restarting | Read `docker compose logs --tail=100 kindling`. Common causes are invalid settings or an unwritable database directory. |
+| Container is unhealthy | `/api/health/live` checks the local database and worker heartbeat. Provider connectivity is shown separately in Kindling's authenticated settings. Docker marks failed probes unhealthy; it restarts the container if a supervised process exits. |
+| Worker reports an error but the app is healthy | The worker is alive but a Readarr/delivery task failed. Check the settings message and logs, fix that connection or folder, then allow the next cycle to run. |
+| Watched folder is missing | Mount the correct host library and use the container path `/watched-books` in Kindling. Check that the container user can read the files and traverse parent folders. |
+| Kindle email fails | Check the recipient, approved sender, SMTP details, attachment size and the delivery message. |
+| Actions fail behind a proxy | Set `KINDLING_TRUSTED_ORIGINS=https://your-kindling-hostname` to the exact public origin, then recreate the container. |
 
-The seed script is safe to rerun, and the app only auto-seeds these defaults when the database is empty. After that, profile names and Kindle email addresses can be edited in the `All requests` screen.
+## Configuration reference
 
-## Scripts
+Keep secrets in `.env` or ZimaOS environment settings. They are excluded from Git and Docker build context. The browser calls Kindling's API; Readarr API keys stay on the server.
 
-```powershell
+| Variable | Default / purpose |
+| --- | --- |
+| `READARR_BASE_URL`, `READARR_API_KEY` | Ebook Readarr connection |
+| `AUDIOBOOK_READARR_BASE_URL`, `AUDIOBOOK_READARR_API_KEY` | Audiobook Readarr connection |
+| `OPENLIBRARY_CONTACT_EMAIL` | Optional contact sent only to Open Library to identify API requests and receive its higher rate limit |
+| `READARR_ROOT_FOLDER_PATH` | Optional ebook root folder override; a path inside Readarr, not Kindling |
+| `READARR_QUALITY_PROFILE_ID`, `READARR_METADATA_PROFILE_ID` | Optional ebook profile IDs; otherwise use available Readarr defaults |
+| `AUDIOBOOK_READARR_ROOT_FOLDER_PATH` | Optional audiobook root folder override |
+| `AUDIOBOOK_READARR_QUALITY_PROFILE_ID`, `AUDIOBOOK_READARR_METADATA_PROFILE_ID` | Optional audiobook profile IDs |
+| `READARR_SYNC_INTERVAL_SECONDS` | `120`; minimum age before a request's remote status is refreshed |
+| `KINDLING_ADMIN_PASSWORD` | Household unlock password; required in production |
+| `KINDLING_SESSION_SECRET` | Random cookie-signing secret; required in production |
+| `KINDLING_TRUSTED_ORIGINS` | Optional comma- or space-separated public origins behind a reverse proxy |
+| `KINDLING_SESSION_TTL_HOURS` | `168`; session lifetime |
+| `KINDLING_PORT` | `3000`; Compose host port |
+| `KINDLING_DATA_DIR` | `./data`; Compose host database directory |
+| `KINDLING_BOOKS_DIR` | `./watched-books`; Compose host ebook directory, mounted read-only |
+| `KINDLING_UID`, `KINDLING_GID` | `1000`, `1000`; Compose container user/group |
+| `DATABASE_PATH` | `./data/kindling.db` locally; fixed at `/app/data/kindling.db` in the supplied Compose file |
+| `SMTP_HOST`, `SMTP_FROM_EMAIL` | Required for Kindle delivery |
+| `SMTP_PORT`, `SMTP_SECURE` | `587`, `false`; mail transport settings |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Optional pair when SMTP authentication is required |
+| `SMTP_MAX_ATTACHMENT_BYTES` | `18874368`; raw attachment size ceiling |
+| `DELIVERY_SCAN_INTERVAL_SECONDS` | `60`; background work interval |
+| `KINDLING_EMBEDDED_WORKER` | `false`; optional in-process worker for local development; always disabled in the managed container |
+
+## Local development
+
+Use Node.js 22.10 or newer. Copy `.env.example` to `.env` and configure it. Existing `.env.local` files are also supported and override `.env` for the local web app and CLI scripts.
+
+```sh
+npm ci
 npm run dev
-npm run build
-npm run start
-npm run worker
+```
+
+The database initializes automatically on first use. For automatic status updates, queued retries and Kindle delivery, run `npm run worker` in another terminal, or set `KINDLING_EMBEDDED_WORKER=true` for development and use just the web process. Do not run both worker modes together.
+
+```sh
 npm run lint
 npm run typecheck
-npm run test
-npm run db:migrate
-npm run db:seed
+npm test
+npm run build
 ```
 
-## Environment Variables
+For the desktop and mobile browser checks, install Playwright's Chromium once and run:
 
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `DATABASE_PATH` | No | SQLite file path. Defaults to `./data/kindling.db` |
-| `READARR_BASE_URL` | Yes for live search/requesting | Base URL for Readarr |
-| `READARR_API_KEY` | Yes for live search/requesting | Readarr API key used as `X-Api-Key` |
-| `READARR_ROOT_FOLDER_PATH` | No | Override the Readarr root folder used when adding authors/books |
-| `READARR_QUALITY_PROFILE_ID` | No | Override the quality profile id |
-| `READARR_METADATA_PROFILE_ID` | No | Override the metadata profile id |
-| `AUDIOBOOK_READARR_BASE_URL` | Yes for audiobook requests | Base URL for the audiobook Readarr instance |
-| `AUDIOBOOK_READARR_API_KEY` | Yes for audiobook requests | Audiobook Readarr API key used as `X-Api-Key` |
-| `AUDIOBOOK_READARR_ROOT_FOLDER_PATH` | No | Override the audiobook Readarr root folder used when adding authors/books |
-| `AUDIOBOOK_READARR_QUALITY_PROFILE_ID` | No | Override the audiobook quality profile id |
-| `AUDIOBOOK_READARR_METADATA_PROFILE_ID` | No | Override the audiobook metadata profile id |
-| `READARR_SYNC_INTERVAL_SECONDS` | No | How often active requests are auto-refreshed |
-| `SMTP_HOST` | Yes for Kindle delivery | SMTP host used to email files to Kindle |
-| `SMTP_PORT` | No | SMTP port. Defaults to `587` |
-| `SMTP_SECURE` | No | Use SMTPS/TLS directly. Defaults to `false` |
-| `SMTP_USERNAME` | No | SMTP username if your server requires auth |
-| `SMTP_PASSWORD` | No | SMTP password if your server requires auth |
-| `SMTP_FROM_EMAIL` | Yes for Kindle delivery | Sender address used by Kindling |
-| `SMTP_MAX_ATTACHMENT_BYTES` | No | Safe raw-file ceiling before SMTP send. Defaults to `18874368` (18 MiB) to stay below Gmail-style message limits after attachment encoding |
-| `KINDLING_ADMIN_PASSWORD` | Yes for production | Household password used to unlock the UI and API |
-| `KINDLING_SESSION_SECRET` | Yes for production | Secret used to sign the Kindling session cookie |
-| `KINDLING_TRUSTED_ORIGINS` | No | Comma- or whitespace-separated list of public origins to trust for same-site API mutations when a reverse proxy rewrites the backend host or protocol |
-| `KINDLING_SESSION_TTL_HOURS` | No | How long the unlock session lasts. Defaults to `168` |
-| `KINDLING_EMBEDDED_WORKER` | No | Enables the old in-process worker for local development only. Defaults to `false` |
-| `DELIVERY_SCAN_INTERVAL_SECONDS` | No | How often the watched folder is rescanned |
-
-## Folder Structure
-
-```text
-app/
-  api/
-  request/
-components/
-lib/
-  db/
-  delivery/
-  readarr/
-  requests/
-  users/
-tests/
+```sh
+npx playwright install chromium
+npm run test:browser
 ```
 
-## SQLite Schema
+The browser suite starts its own local server on port `3100`, uses a separate test database, and supplies controlled API responses.
 
-Main tables:
+The build produces Next's standalone server plus compiled `dist/init.cjs`, `dist/worker.cjs` and `dist/backup.cjs`. Docker copies only the runtime output, static files and SQL migrations. The [Next.js standalone output documentation](https://nextjs.org/docs/app/api-reference/config/next-config-js/output) explains the server layout; the [Docker process-management documentation](https://docs.docker.com/engine/containers/multi-service_container/) explains the process supervision and init behavior used here.
 
-- `users`
-- `book_requests`
-- `status_history`
-- `app_settings`
-- `delivery_attempts`
+### Validation and remaining installation checks
 
-`book_requests` stores the app-side source of truth, including:
+Automated tests exercise Readarr responses through controlled fixtures, request persistence, EPUB matching and delivery logic, session security, process supervision, worker heartbeats and shutdown, and SQLite initialization and online backup. These checks do not connect to your Readarr instances or send real Kindle email.
 
-- who requested the book
-- the requested title/author/year snapshot
-- friendly status
-- linked Readarr ids when available
-- cover URL and sync timestamps
-- last matched local file path
-- latest Kindle delivery snapshot
+An isolated Windows smoke test of the compiled production output also verified native SQLite loading, Nodemailer attachment generation without sending email, initialization and online backup, supervised web/worker startup, the local health probe and supervisor shutdown. The packaged standalone output was checked for accidental inclusion of environment files, local databases and test data.
 
-## Internal App API
+The supplied Compose definitions have been checked with Docker Compose. An actual Linux container build/start and import through the ZimaOS custom-app interface still need checking on the target machine: the review workstation's Docker daemon was unavailable. After installing, confirm both Readarr connections in settings, request one book in each format, and test Kindle delivery using your existing SMTP configuration. Keep the old installation's stopped containers and data backup until those checks pass.
 
-- `GET /api/users`
-- `PATCH /api/users/:id`
-- `GET /api/auth/session`
-- `POST /api/auth/session`
-- `GET /api/requests?userId=...`
-- `POST /api/requests`
-- `GET /api/search?q=...&userId=...`
-- `POST /api/requests/:id/sync`
-- `DELETE /api/requests/:id`
-- `POST /api/requests/:id/deliver`
-- `GET /api/settings/delivery`
-- `PUT /api/settings/delivery`
-- `GET /api/health`
+## Project layout
 
-## Architecture Summary
+- `app/`: pages and authenticated server API routes
+- `components/`: household, book request and settings interface
+- `lib/readarr/`: separate adapters for ebook and audiobook Readarr
+- `lib/requests/`: local request workflow, retries and status updates
+- `lib/delivery/`: EPUB matching and SMTP delivery
+- `lib/db/`: SQLite repositories and versioned migrations
+- `deploy/`: ZimaOS Compose template and one-command deployment automation
+- `scripts/`: runtime supervisor, build, initialization, health check and backup
+- `tests/`: request, integration boundary, security and worker lifecycle tests
 
-Kindling keeps Readarr behind a server-side adapter in `lib/readarr/`. The browser never calls Readarr directly. The local SQLite database is the source of truth for "My Books", so failed Readarr actions still leave a visible request trail for the family.
-
-The request flow is:
-
-1. Save the request locally first.
-2. Route EPUB requests to the main Readarr instance and audiobook requests to the audiobook Readarr instance.
-3. Ask the chosen Readarr to ensure the author exists.
-4. Add or reuse the requested book.
-5. Monitor the book and trigger a search when possible.
-6. Sync Readarr status back into the local request record.
-
-## Readarr Integration Notes
-
-- Readarr is treated as an archived/retired backend dependency, so the adapter intentionally stays small and defensive.
-- Kindling keeps the UI book-centric even though Readarr has author-level operations under the hood.
-- Audiobooks use a separate Readarr instance because Readarr itself cannot distinguish audiobook ownership from EPUB ownership.
-- If Readarr fails during creation, the request stays visible locally with a failed status and message.
-- Deleting a request clears any imported Readarr files it can find, unmonitors the book, and resets the local request to `Not Monitored` so it can be requested again later.
-
-## Kindle Delivery
-
-Kindling now includes a watched-folder matcher plus an SMTP-based Kindle sender for EPUB requests. The watched folder path is configured in the `All requests` screen and scanned by the dedicated `npm run worker` process. When a requested ebook file appears there, Kindling marks the request as ready and only auto-sends when the match is exact enough to be safe.
+The local database is the source of truth for saved requests. A remote failure leaves a visible request and message rather than discarding the household's request history.
