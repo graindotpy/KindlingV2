@@ -19,6 +19,9 @@
 
 # production
 /build
+/dist/
+/test-results/
+/playwright-report/
 
 # misc
 .DS_Store
@@ -55,3 +58,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# deploy artifacts, logs and local secrets
+*.tar.gz
+*.tgz
+*.log
+/deploy/**/secrets/
+/watched-books/
