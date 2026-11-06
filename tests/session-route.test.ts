@@ -41,6 +41,20 @@ describe("unlock rate limiting", () => {
     expect(blocked.headers.get("set-cookie")).toBeNull();
   });
 
+  it("enforces the limit on concurrent attempts", async () => {
+    const responses = await Promise.all(Array.from({ length: 20 }, () => unlock("wrong")));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 401)).toHaveLength(5);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+  });
+
+  it("enforces the household ceiling on concurrent attempts from many addresses", async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 50 }, (_, index) => unlock("wrong", `192.0.2.${index}`)),
+    );
+    expect(responses.filter((response) => response.status === 401)).toHaveLength(30);
+  });
+
   it("does not block other clients for one client's failures", async () => {
     for (let attempt = 0; attempt < 5; attempt++) await unlock("wrong");
     expect((await unlock("open-sesame", "198.51.100.9")).status).toBe(200);
