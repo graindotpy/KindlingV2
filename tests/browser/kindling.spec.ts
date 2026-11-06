@@ -41,7 +41,7 @@ test("search can be repeated, warns about partial outages and requests the selec
     return route.fulfill({ json: { results: [result], warnings: ["Audiobook search is temporarily unavailable."] } });
   });
   await page.route("**/api/requests", async (route) => {
-    expect(route.request().postDataJSON()).toMatchObject({ userId: 1, requestFormat: "ebook", selection: source });
+    expect(route.request().postDataJSON()).toMatchObject({ userId: 1, requestFormat: "ebook", selection: { foreignBookId: source.foreignBookId, author: { foreignAuthorId: source.author.foreignAuthorId } } });
     await route.fulfill({ status: 201, json: saved });
   });
   await page.goto("/");

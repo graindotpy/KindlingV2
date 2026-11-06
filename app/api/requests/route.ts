@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireApiSession } from "@/lib/auth";
 import { ensureBackgroundServices } from "@/lib/bootstrap";
 import { createRequestService } from "@/lib/requests/service";
+import { findSearchSelection } from "@/lib/search/selection-cache";
 import { ensureDefaultUsers } from "@/lib/users/service";
 
 export const runtime = "nodejs";
@@ -12,32 +13,14 @@ const getQuerySchema = z.object({
   userId: z.coerce.number().int().positive(),
 });
 
-const selectionSchema = z
-  .object({
-    id: z.number().int().nonnegative().optional(),
-    title: z.string().min(1),
-    authorId: z.number().int().nonnegative().optional(),
-    foreignBookId: z.string().min(1),
-    foreignEditionId: z.string().nullable().optional(),
-    titleSlug: z.string().nullable().optional(),
-    releaseDate: z.string().nullable().optional(),
-    remoteCover: z.string().nullable().optional(),
-    images: z.array(z.any()).nullable().optional(),
-    lastSearchTime: z.string().nullable().optional(),
-    statistics: z.any().optional(),
-    editions: z.array(z.any()).nullable().optional(),
-    author: z
-      .object({
-        id: z.number().int().nonnegative().optional(),
-        authorName: z.string().min(1),
-        foreignAuthorId: z.string().min(1),
-        titleSlug: z.string().nullable().optional(),
-        remotePoster: z.string().nullable().optional(),
-        images: z.array(z.any()).nullable().optional(),
-      })
-      .passthrough(),
-  })
-  .passthrough();
+// Only the identity of the chosen result is read from the browser. The full
+// Readarr book is taken from Kindling's own recent search results.
+const selectionSchema = z.object({
+  foreignBookId: z.string().trim().min(1).max(200),
+  author: z.object({
+    foreignAuthorId: z.string().trim().min(1).max(200),
+  }),
+});
 
 const createBodySchema = z.object({
   userId: z.number().int().positive(),
@@ -100,11 +83,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const selection = findSearchSelection(
+    parsed.data.requestFormat,
+    parsed.data.selection.foreignBookId,
+    parsed.data.selection.author.foreignAuthorId,
+  );
+  if (!selection) {
+    return NextResponse.json(
+      { message: "That search result has expired. Please search for the book again." },
+      { status: 409 },
+    );
+  }
+
   try {
     const created = await createRequestService().createRequest(
       parsed.data.userId,
       parsed.data.requestFormat,
-      parsed.data.selection,
+      selection,
     );
 
     return NextResponse.json(created, { status: 201 });

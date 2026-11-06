@@ -41,7 +41,7 @@ Endpoint behavior was checked against Readarr's [search controller](https://gith
 
 ## Installation handover
 
-Follow the [ZimaOS installation and migration guide](../README.md), which includes a single-container Compose setup, a ZimaOS custom-app template, persistent paths, backups, upgrades and troubleshooting. No image has been published to a registry; the supplied setup builds locally.
+Follow the [ZimaOS installation and migration guide](../README.md), which includes a single-container Compose setup, a ZimaOS custom-app template, persistent paths, backups, upgrades and troubleshooting. At the time of this review no image was published. Since then, every push to `main` publishes `ghcr.io/graindotpy/kindlingv2:edge` and the Zima updates from it automatically; see the README.
 
 For the existing installation, preserve its actual data directory and SMTP configuration, stop both old containers, and back up the data before starting the replacement. After installation, verify both Readarr connections, request one ebook and one audiobook, and check Kindle delivery with the existing recipient/settings. Keep the stopped old installation and its backup until those target-machine checks succeed.
 

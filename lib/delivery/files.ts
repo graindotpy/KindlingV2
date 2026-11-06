@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { BookRequestRecord } from "@/lib/requests/types";
 
-const SUPPORTED_EXTENSIONS = new Set([".epub", ".mobi", ".azw", ".azw3", ".pdf"]);
+// Amazon's Send to Kindle no longer accepts MOBI or AZW files, so only offer
+// formats that it will deliver.
+const SUPPORTED_EXTENSIONS = new Set([".epub", ".pdf"]);
 const STOP_WORDS = new Set([
   "a",
   "an",
@@ -76,8 +78,7 @@ async function walkDirectory(rootDir: string, collected: WatchedBookFile[]) {
       continue;
     }
 
-    const extension = path.extname(entry.name).toLowerCase();
-    if (!SUPPORTED_EXTENSIONS.has(extension)) {
+    if (!isKindleDeliverableFile(entry.name)) {
       continue;
     }
 
@@ -88,6 +89,10 @@ async function walkDirectory(rootDir: string, collected: WatchedBookFile[]) {
       normalizedBasename: normalizeForMatching(entry.name),
     });
   }
+}
+
+export function isKindleDeliverableFile(filePath: string) {
+  return SUPPORTED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 export async function scanWatchDirectory(rootDir: string) {

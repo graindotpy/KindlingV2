@@ -8,6 +8,12 @@ import {
   requireSameOrigin,
   verifyAdminPassword,
 } from "@/lib/auth";
+import {
+  getUnlockClientKey,
+  getUnlockRetryAfterSeconds,
+  recordUnlockFailure,
+  recordUnlockSuccess,
+} from "@/lib/auth-rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +21,17 @@ export const dynamic = "force-dynamic";
 const bodySchema = z.object({
   password: z.string().min(1, "Please enter the Kindling password.").max(1024),
 });
+
+function rateLimitedResponse(clientKey: string) {
+  const retryAfter = getUnlockRetryAfterSeconds(clientKey);
+  if (retryAfter === null) return null;
+  return NextResponse.json(
+    {
+      message: `Too many incorrect passwords. Try again in ${Math.ceil(retryAfter / 60)} minute${retryAfter > 60 ? "s" : ""}.`,
+    },
+    { status: 429, headers: { "Retry-After": String(retryAfter) } },
+  );
+}
 
 export async function GET(request: Request) {
   return NextResponse.json(getSessionStatus(request));
@@ -33,6 +50,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const clientKey = getUnlockClientKey(request);
+  const earlyLimit = rateLimitedResponse(clientKey);
+  if (earlyLimit) return earlyLimit;
+
   const body = await request.json().catch(() => null);
   const parsed = bodySchema.safeParse(body);
 
@@ -43,13 +64,21 @@ export async function POST(request: Request) {
     );
   }
 
+  // Check again after the body has been read: concurrent or slow requests could
+  // otherwise all pass the first check before any failure is recorded. From here
+  // to recording the result there is no await, so the check and the count agree.
+  const limited = rateLimitedResponse(clientKey);
+  if (limited) return limited;
+
   if (!verifyAdminPassword(parsed.data.password)) {
+    recordUnlockFailure(clientKey);
     return NextResponse.json(
       { message: "That Kindling password was not correct." },
       { status: 401 },
     );
   }
 
+  recordUnlockSuccess(clientKey);
   return createAuthenticatedResponse(request);
 }
 
