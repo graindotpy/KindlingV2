@@ -8,6 +8,12 @@ import {
   requireSameOrigin,
   verifyAdminPassword,
 } from "@/lib/auth";
+import {
+  getUnlockClientKey,
+  getUnlockRetryAfterSeconds,
+  recordUnlockFailure,
+  recordUnlockSuccess,
+} from "@/lib/auth-rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +39,17 @@ export async function POST(request: Request) {
     );
   }
 
+  const clientKey = getUnlockClientKey(request);
+  const retryAfter = getUnlockRetryAfterSeconds(clientKey);
+  if (retryAfter !== null) {
+    return NextResponse.json(
+      {
+        message: `Too many incorrect passwords. Try again in ${Math.ceil(retryAfter / 60)} minute${retryAfter > 60 ? "s" : ""}.`,
+      },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = bodySchema.safeParse(body);
 
@@ -44,12 +61,14 @@ export async function POST(request: Request) {
   }
 
   if (!verifyAdminPassword(parsed.data.password)) {
+    recordUnlockFailure(clientKey);
     return NextResponse.json(
       { message: "That Kindling password was not correct." },
       { status: 401 },
     );
   }
 
+  recordUnlockSuccess(clientKey);
   return createAuthenticatedResponse(request);
 }
 

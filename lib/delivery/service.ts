@@ -6,6 +6,7 @@ import {
   findBestMatchingFile,
   findFileMatch,
   getAutomaticDeliveryMatch,
+  isKindleDeliverableFile,
   scanWatchDirectory,
   type WatchedBookFile,
 } from "@/lib/delivery/files";
@@ -57,7 +58,11 @@ async function resolveMatchedFile(
     return null;
   }
 
-  if (request.matchedFilePath && (await deps.fileExists(request.matchedFilePath))) {
+  if (
+    request.matchedFilePath &&
+    isKindleDeliverableFile(request.matchedFilePath) &&
+    (await deps.fileExists(request.matchedFilePath))
+  ) {
     return request.matchedFilePath;
   }
 

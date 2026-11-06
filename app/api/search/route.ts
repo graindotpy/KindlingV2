@@ -9,6 +9,7 @@ import {
   createSearchResolver,
   SearchResolutionError,
 } from "@/lib/search/resolver";
+import { rememberSearchSelections } from "@/lib/search/selection-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,6 +80,8 @@ export async function GET(request: NextRequest) {
         onWarnings: (messages) => warnings.push(...messages),
       },
     );
+
+    rememberSearchSelections(results);
 
     return NextResponse.json(
       detailed
