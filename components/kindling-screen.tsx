@@ -93,10 +93,16 @@ export function KindlingScreen({ screen }: { screen: "books" | "request" | "requ
     } finally { if (sequence === listSequence.current) setRequestsLoading(false); }
   }, [isHousehold, isSearch, selectedUserId]);
 
+  // These effects start data loads. The loaders reset their own loading and error
+  // state before fetching, which the React Compiler lint flags; the sequence refs
+  // above already discard stale results, so the extra render is harmless.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void loadUsers(); }, [loadUsers]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { if (!isSearch) void loadDeliverySettings(); }, [isSearch, loadDeliverySettings]);
   useEffect(() => invalidateInitialLoads, [invalidateInitialLoads]);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshRequests();
     if (isSearch) return;
     const interval = window.setInterval(() => { if (document.visibilityState === "visible") void refreshRequests(true); }, 45000);
@@ -160,7 +166,7 @@ export function KindlingScreen({ screen }: { screen: "books" | "request" | "requ
     if (busyActionRef.current.has(key)) return;
     busyActionRef.current.add(key); setBusyActions(new Set(busyActionRef.current)); setSearchError(null); setSearchMessage(null);
     try {
-      const created = await fetchJson<BookRequestRecord>("/api/requests", { method: "POST", body: JSON.stringify({ userId, requestFormat: format, selection: action.source }) });
+      const created = await fetchJson<BookRequestRecord>("/api/requests", { method: "POST", body: JSON.stringify({ userId, requestFormat: format, selection: { foreignBookId: action.source.foreignBookId, author: { foreignAuthorId: action.source.author.foreignAuthorId } } }) });
       if (selectedUserRef.current !== userId) return;
       setSearchResults((entries) => entries.map((entry) => entry.fingerprint === result.fingerprint ? { ...entry, actions: { ...entry.actions, [format]: { ...entry.actions[format], availability: "requested-by-you", availabilityLabel: "Requested", availabilityDescription: created.statusMessage ?? "You can follow its progress in My books.", request: created } } } : entry));
       setSearchMessage(`${result.title} (${FORMAT_LABELS[format].toLowerCase()}) was added to your books.${created.status === "failed" ? " It needs attention; check its status in My books." : ""}`);

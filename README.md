@@ -118,7 +118,7 @@ KINDLING_BOOKS_DIR=/DATA/Media/Books
 
 Recreate the container after changing its mounts. In Kindling's delivery settings, set the watched folder to `/watched-books`, the path **inside the container**. This mount is read-only: Kindling only needs to read books to attach them to email. Use the same container path as before if you need to preserve previously matched file paths, or rescan after changing it.
 
-Add each person's Kindle email in household settings and approve the SMTP sender in Amazon's personal document settings. Automatic sending requires a sufficiently confident file match; manual sending is also available for matched EPUBs. Audiobooks remain in the audiobook Readarr instance and are not emailed to Kindle.
+Add each person's Kindle email in household settings and approve the SMTP sender in Amazon's personal document settings. Automatic sending requires a sufficiently confident file match; manual sending is also available for matched EPUBs. Only EPUB and PDF files are sent, because Amazon's Send to Kindle no longer accepts MOBI or AZW. Audiobooks remain in the audiobook Readarr instance and are not emailed to Kindle.
 
 The default raw attachment limit is 18 MiB (`SMTP_MAX_ATTACHMENT_BYTES=18874368`) to leave room for email encoding. SMTP acceptance means the email was sent; Amazon controls final Kindle delivery.
 
@@ -195,6 +195,8 @@ If rolling back application code after a schema change, restore the database bac
 | Worker reports an error but the app is healthy | The worker is alive but a Readarr/delivery task failed. Check the settings message and logs, fix that connection or folder, then allow the next cycle to run. |
 | Watched folder is missing | Mount the correct host library and use the container path `/watched-books` in Kindling. Check that the container user can read the files and traverse parent folders. |
 | Kindle email fails | Check the recipient, approved sender, SMTP details, attachment size and the delivery message. |
+| "Too many incorrect passwords" | After 5 wrong passwords from one address, or 30 across the household, unlocking pauses for up to 15 minutes. Wait, or restart the container to clear it. Devices that are already unlocked are not affected. |
+| "That search result has expired" | Requests use Kindling's own recent search results (kept for 30 minutes, and cleared when the container restarts). Search for the book again and request it from the new results. |
 | Actions fail behind a proxy | Set `KINDLING_TRUSTED_ORIGINS=https://your-kindling-hostname` to the exact public origin, then recreate the container. |
 
 ## Configuration reference

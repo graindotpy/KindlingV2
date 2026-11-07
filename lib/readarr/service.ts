@@ -768,12 +768,6 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       return readarrFetch<ReadarrBookFile[]>(format, "/api/v1/bookfile", undefined, { bookId });
     },
 
-    deleteBookFile(bookFileId: number) {
-      return readarrFetch<null>(format, `/api/v1/bookfile/${bookFileId}`, {
-        method: "DELETE",
-      });
-    },
-
     getRootFolders,
     getQualityProfiles,
     getMetadataProfiles,
@@ -907,16 +901,6 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
         body: JSON.stringify({
           bookIds: [bookId],
           monitored: true,
-        }),
-      });
-    },
-
-    unmonitorRequestedBook(bookId: number) {
-      return readarrFetch<ReadarrLookupBook[]>(format, "/api/v1/book/monitor", {
-        method: "PUT",
-        body: JSON.stringify({
-          bookIds: [bookId],
-          monitored: false,
         }),
       });
     },
