@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check remote deployment script syntax
         run: bash -n deploy/deploy-zimaos.sh
       - uses: actions/setup-node@v4
@@ -40,7 +40,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Parse with Windows PowerShell 5.1
         shell: powershell
         run: |
