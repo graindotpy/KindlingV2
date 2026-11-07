@@ -30,7 +30,7 @@ jobs:
       - run: npm run test:browser
       - name: Build the deployment image
         run: docker build -t kindling:ci .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: browser-failure-details
