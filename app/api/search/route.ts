@@ -47,6 +47,8 @@ export async function GET(request: NextRequest) {
     ensureDefaultUsers();
     const detailed = request.nextUrl.searchParams.get("details") === "1";
     const warnings: string[] = [];
+    // Resolver notices explain a fallback path; they only help when nothing was found.
+    let resolverWarnings: string[] = [];
     let searchQuery = parsed.data.q;
     let bookMatch: ReadarrAuthorBookSearch | null = null;
 
@@ -56,8 +58,8 @@ export async function GET(request: NextRequest) {
         parsed.data.candidate,
         { signal: request.signal },
       );
-      warnings.push(...resolution.warnings);
       if (resolution.state === "choose") {
+        warnings.push(...resolution.warnings);
         return NextResponse.json(
           {
             state: "choose",
@@ -69,6 +71,7 @@ export async function GET(request: NextRequest) {
       }
       searchQuery = resolution.readarrQuery;
       bookMatch = resolution.bookMatch;
+      resolverWarnings = resolution.warnings;
     }
 
     const results = await createRequestService().searchBooksForUser(
@@ -82,6 +85,7 @@ export async function GET(request: NextRequest) {
     );
 
     rememberSearchSelections(results);
+    if (results.length === 0) warnings.unshift(...resolverWarnings);
 
     return NextResponse.json(
       detailed

@@ -42,6 +42,18 @@ describe("search API", () => {
     expect(mocks.search).toHaveBeenCalledWith(1, "Borrowers", expect.objectContaining({ format: "audiobook", bookMatch: null }));
   });
 
+  it("drops resolver fallback notices once the search finds a result", async () => {
+    mocks.resolve.mockResolvedValueOnce({
+      state: "search",
+      readarrQuery: "Gardens of the Moon",
+      bookMatch: null,
+      warnings: ["Open Library could not identify that book, so Kindling used Readarr's standard search instead."],
+    });
+    mocks.search.mockResolvedValueOnce([{ title: "Gardens of the Moon" }]);
+    const response = await GET(new NextRequest("http://localhost/api/search?q=Gardens%20of%20the%20Moon&userId=1&details=1"));
+    expect(await response.json()).toEqual({ state: "results", results: [{ title: "Gardens of the Moon" }], warnings: [] });
+  });
+
   it("keeps the existing array response for older clients", async () => {
     const response = await GET(new NextRequest("http://localhost/api/search?q=Borrowers&userId=1"));
     expect(await response.json()).toEqual([]);

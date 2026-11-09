@@ -141,7 +141,7 @@ describe("Readarr search reliability", () => {
     expect(fetchMock.mock.calls.filter(([input]) => new URL(input).pathname.endsWith("book"))).toHaveLength(1);
   });
 
-  it("retains partial results and warns about rows with incomplete metadata", async () => {
+  it("retains partial results without warning about rows it had to skip", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL) => {
       const url = new URL(input);
       return url.pathname.endsWith("book/lookup") && url.searchParams.get("term") === "Borrowers"
@@ -149,7 +149,7 @@ describe("Readarr search reliability", () => {
     }));
     const results = await createReadarrService().searchBooksWithDiagnostics("Borrowers");
     expect(results.books).toEqual([book()]);
-    expect(results.warnings.join(" ")).toContain("Some results could not be safely matched");
+    expect(results.warnings).toEqual([]);
   });
 
   it("deduplicates works and ranks exact title matches first", async () => {
@@ -426,7 +426,7 @@ describe("createReadarrService resolved author search", () => {
       });
 
       expect(response.books).toEqual([expected]);
-      expect(response.warnings.join(" ")).toContain("original query");
+      expect(response.warnings).toEqual([]);
       expect(searchTerms).toEqual(["author:5760737", "Baru Cormorant"]);
       expect(searchTerms).not.toContain("The Traitor Baru Cormorant");
     },
@@ -474,7 +474,7 @@ describe("createReadarrService resolved author search", () => {
     });
 
     expect(response.books).toEqual([expected]);
-    expect(response.warnings.join(" ")).toContain("different author");
+    expect(response.warnings).toEqual([]);
   });
 
   it("accepts a clean empty exact-query response as the final result", async () => {
@@ -593,7 +593,7 @@ describe("createReadarrService resolved author search", () => {
 
     expect(response.books).toEqual([localMatch]);
     expect(response.source).toBe("library");
-    expect(response.warnings.join(" ")).toContain("original query");
+    expect(response.warnings.join(" ")).not.toContain("original query");
     expect(response.warnings.join(" ")).toContain("Readarr library");
   });
 
@@ -667,7 +667,7 @@ describe("createReadarrService resolved author search", () => {
 
     expect(response.books).toEqual([expected]);
     expect(response.source).toBe("metadata");
-    expect(response.warnings.join(" ")).toContain("different author");
+    expect(response.warnings).toEqual([]);
   });
 
   it("repairs a known provider title artifact while retaining the author ID check", async () => {
@@ -696,7 +696,7 @@ describe("createReadarrService resolved author search", () => {
     });
 
     expect(response.books).toEqual([expected]);
-    expect(response.warnings.join(" ")).toContain("different author");
+    expect(response.warnings).toEqual([]);
   });
 
   it("preserves diagnostics when an author lookup falls back to the local library", async () => {
