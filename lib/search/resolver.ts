@@ -48,8 +48,18 @@ function isIsbnQuery(query: string) {
   return normalizeSearchQuery(query).match(/^isbn:(.+)$/i)?.[1] ?? null;
 }
 
+function normalizeTitle(value: string) {
+  return normalizeSearchText(value).replace(/^(?:the|a|an) /, "");
+}
+
+// Catalogues disagree on leading articles ("The Bonehunters" vs "Bonehunters").
 function isExactTitle(candidate: OpenLibraryBookCandidate, query: string) {
-  return normalizeSearchText(candidate.title) === normalizeSearchText(query);
+  return normalizeTitle(candidate.title) === normalizeTitle(query);
+}
+
+function mergeCandidates(...lists: OpenLibraryBookCandidate[][]) {
+  const seen = new Set<string>();
+  return lists.flat().filter((book) => !seen.has(book.key) && Boolean(seen.add(book.key)));
 }
 
 function toPublicCandidate(candidate: OpenLibraryBookCandidate): SearchCandidate {
@@ -148,6 +158,15 @@ export function createSearchResolver(
           trimmedQuery,
           "Open Library is unavailable, so Kindling used Readarr's standard search instead.",
         );
+      }
+
+      if (!isbn && !books.some((book) => isExactTitle(book, trimmedQuery))) {
+        // Title search is strict about wording; a keyword search often finds the
+        // intended work. Its failure leaves the title results as they were.
+        const keywordBooks = await openLibrary
+          .searchBookCandidatesByKeywords?.(trimmedQuery, { signal: options.signal })
+          .catch(() => [] as OpenLibraryBookCandidate[]) ?? [];
+        books = mergeCandidates(books, keywordBooks);
       }
 
       const exactBooks = isbn ? books : books.filter((book) => isExactTitle(book, trimmedQuery));

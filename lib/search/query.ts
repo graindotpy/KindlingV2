@@ -32,14 +32,20 @@ function stripParentheticalText(value: string) {
   return stripped.trim().replace(/\s+/g, " ");
 }
 
+// Catalogues disagree on leading articles: Open Library files Erikson's
+// "The Bonehunters" as "Bonehunters".
+function withoutLeadingArticle(normalized: string) {
+  return normalized.replace(/^(?:the|a|an) (?=\S)/u, "");
+}
+
 function describeBookTitle(value: string) {
   const withoutParenthetical = stripParentheticalText(value);
   const subtitle = withoutParenthetical.match(/^(.+?)(?::|[\u2013\u2014]|\s-\s)(.+)$/u);
 
   return {
     exact: normalizeSearchText(value),
-    withoutParenthetical: normalizeSearchText(withoutParenthetical),
-    base: normalizeSearchText(subtitle?.[1] ?? withoutParenthetical),
+    withoutParenthetical: withoutLeadingArticle(normalizeSearchText(withoutParenthetical)),
+    base: withoutLeadingArticle(normalizeSearchText(subtitle?.[1] ?? withoutParenthetical)),
     hasSubtitle: Boolean(subtitle?.[2]?.trim()),
   };
 }
@@ -79,7 +85,7 @@ export function getBookTitleMatchKind(
     return "subtitle";
   }
   if (
-    repairProviderArtifactTitle(candidateTitle) === target.withoutParenthetical
+    withoutLeadingArticle(repairProviderArtifactTitle(candidateTitle)) === target.withoutParenthetical
   ) {
     return "provider-artifact";
   }

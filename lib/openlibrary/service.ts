@@ -488,6 +488,24 @@ export function createOpenLibraryService() {
     return withCallerSignal(request, options.signal);
   }
 
+  // Keyword search matches titles stored without a leading article (Open Library
+  // files Erikson's "The Bonehunters" as "Bonehunters"), which title= misses.
+  async function searchBookCandidatesByKeywords(
+    query: string,
+    options: OpenLibraryRequestOptions = {},
+  ) {
+    const normalized = normalizeTextQuery(query, "book title");
+    const cacheKey = `book-keywords:${normalized.toLowerCase()}`;
+    const request = loadCached(cacheKey, "book-search", async () => parseBookCandidates(
+      await openLibraryFetch("/search.json", {
+        q: normalized,
+        fields: "key,title,author_key,author_name,first_publish_year,cover_i",
+        limit: String(SEARCH_RESULT_LIMIT),
+      }),
+    ));
+    return withCallerSignal(request, options.signal);
+  }
+
   async function searchIsbnCandidates(
     isbn: string,
     options: OpenLibraryRequestOptions = {},
@@ -549,6 +567,7 @@ export function createOpenLibraryService() {
 
   return {
     searchBookCandidates,
+    searchBookCandidatesByKeywords,
     searchIsbnCandidates,
     searchAuthorCandidates,
     getGoodreadsAuthorId,
