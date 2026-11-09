@@ -21,6 +21,10 @@ function makeOpenLibrary() {
       query: string,
       options?: OpenLibraryRequestOptions,
     ) => Promise<OpenLibraryBookCandidate[]>>(async () => []),
+    searchBookCandidatesByKeywords: vi.fn<(
+      query: string,
+      options?: OpenLibraryRequestOptions,
+    ) => Promise<OpenLibraryBookCandidate[]>>(async () => []),
     searchIsbnCandidates: vi.fn<(
       isbn: string,
       options?: OpenLibraryRequestOptions,
@@ -71,6 +75,34 @@ describe("search resolver", () => {
       "OL6983136A",
       { signal: undefined },
     );
+  });
+
+  it("finds a work Open Library files without the leading article", async () => {
+    const openLibrary = makeOpenLibrary();
+    const erikson = { key: "OL1394250A", name: "Steven Erikson" };
+    openLibrary.searchBookCandidates.mockResolvedValueOnce([{
+      key: "OL29179W", title: "The Bonehunters' Revenge",
+      authors: [{ key: "OL26569A", name: "David Rains Wallace" }], firstPublishYear: 1999, coverUrl: null,
+    }]);
+    openLibrary.searchBookCandidatesByKeywords.mockResolvedValueOnce([{
+      key: "OL5734753W", title: "Bonehunters", authors: [erikson], firstPublishYear: 2006, coverUrl: null,
+    }]);
+    openLibrary.getGoodreadsAuthorId.mockResolvedValueOnce("31232");
+
+    await expect(createSearchResolver(openLibrary as never).resolve("The Bonehunters")).resolves.toMatchObject({
+      state: "search",
+      readarrQuery: "author:31232",
+      bookMatch: { authorForeignId: "31232", targetTitle: "Bonehunters", alternateTitles: ["The Bonehunters"] },
+    });
+    expect(openLibrary.searchBookCandidatesByKeywords).toHaveBeenCalledWith("The Bonehunters", expect.anything());
+  });
+
+  it("skips the keyword search when the title search already has an exact match", async () => {
+    const openLibrary = makeOpenLibrary();
+    openLibrary.searchBookCandidates.mockResolvedValueOnce([princeOfThorns]);
+    openLibrary.getGoodreadsAuthorId.mockResolvedValueOnce("4721536");
+    await createSearchResolver(openLibrary as never).resolve("Prince of Thorns");
+    expect(openLibrary.searchBookCandidatesByKeywords).not.toHaveBeenCalled();
   });
 
   it("returns distinct exact-title choices before looking up a Goodreads author ID", async () => {

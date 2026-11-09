@@ -81,6 +81,21 @@ describe("Open Library service", () => {
     expect(JSON.stringify(candidates)).not.toContain("contact@example.com");
   });
 
+  it("runs keyword searches with q= instead of the title field", async () => {
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = new URL(input);
+      expect(url.pathname).toBe("/search.json");
+      expect(url.searchParams.get("q")).toBe("The Bonehunters");
+      expect(url.searchParams.has("title")).toBe(false);
+      return jsonResponse(bookPayload());
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const candidates = await createOpenLibraryService().searchBookCandidatesByKeywords(" The  Bonehunters ");
+    expect(candidates.map((candidate) => candidate.key)).toEqual(["OL17450797W"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps valid books when Open Library mixes in a malformed unrelated work", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const payload = bookPayload();
