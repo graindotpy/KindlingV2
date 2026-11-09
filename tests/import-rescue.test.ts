@@ -145,7 +145,7 @@ describe("Readarr import rescue client", () => {
     vi.stubEnv("AUDIOBOOK_READARR_BASE_URL", "http://localhost:8888");
     vi.stubEnv("AUDIOBOOK_READARR_API_KEY", "test-api-key");
     resetAppConfigCache();
-    const fetchMock = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+    const fetchMock = vi.fn<(input: string | URL, init?: RequestInit) => Promise<Response>>(async () =>
       new Response(JSON.stringify({ id: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     try {
