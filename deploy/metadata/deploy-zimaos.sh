@@ -12,9 +12,12 @@ METADATA_PORT=${METADATA_PORT:-8788}
 
 mkdir -p "$APP_DIR/secrets" "$APP_DIR/data/postgres"
 install -m 0644 "$SRC_DIR/compose.yaml" "$APP_DIR/compose.yaml"
-if [[ ! -s $APP_DIR/secrets/postgres_password ]]; then
-  umask 077
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40 >"$APP_DIR/secrets/postgres_password"
+# Regenerate a missing or malformed password only while Postgres is uninitialised;
+# afterwards the stored password must stay as it is.
+if ! grep -Eqx '[0-9a-f]{48}' "$APP_DIR/secrets/postgres_password" 2>/dev/null; then
+  [[ -z $(ls -A "$APP_DIR/data/postgres") ]] || die "Postgres is initialised but its password file is missing or malformed."
+  # od reads exactly 24 bytes, so no pipe stage is cut short (tr|head would SIGPIPE under pipefail).
+  od -An -tx1 -N24 /dev/urandom | tr -d ' \n' >"$APP_DIR/secrets/postgres_password"
 fi
 # Containers run as non-root users and must read the file, so it stays 0644;
 # the root-only 0700 folder keeps other Zima users out.
@@ -22,8 +25,11 @@ chmod 0644 "$APP_DIR/secrets/postgres_password"
 chmod 0700 "$APP_DIR/secrets"
 printf 'METADATA_PORT=%s\n' "$METADATA_PORT" >"$APP_DIR/.env"
 
-if ! docker ps --format '{{.Names}}' | grep -qx kindling-metadata; then
-  if (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -qE "[:.]$METADATA_PORT\s"; then
+# Capture output before grepping: grep -q exiting early would SIGPIPE the producer under pipefail.
+running=$(docker ps --format '{{.Names}}')
+if ! grep -qx kindling-metadata <<<"$running"; then
+  listeners=$(ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true)
+  if grep -qE "[:.]$METADATA_PORT\s" <<<"$listeners"; then
     die "Port $METADATA_PORT is already in use. Rerun with METADATA_PORT=<free port>."
   fi
 fi
