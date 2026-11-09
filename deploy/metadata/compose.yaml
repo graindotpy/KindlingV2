@@ -1,0 +1,79 @@
+# Self-hosted rreading-glasses (Goodreads mode) for both Readarr instances.
+# Goodreads mode keeps the IDs Readarr and Kindling already use, so existing
+# libraries and Kindling's author:<goodreadsId> searches keep working.
+name: kindling-metadata
+
+services:
+  metadata:
+    image: blampe/rreading-glasses:latest@sha256:e16bedb8e0e6b1a2b2dd67e80b4380f2c4d2db57a2914fe449132df7e8af6245
+    pull_policy: missing
+    container_name: kindling-metadata
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/main", "serve"]
+    command: ["--upstream=www.goodreads.com"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DATABASE: rreading_glasses
+      POSTGRES_USER: rreading_glasses
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    ports:
+      # Readarr reaches it through the Zima's LAN address.
+      - "${METADATA_BIND_ADDRESS:-0.0.0.0}:${METADATA_PORT:-8788}:8788"
+    networks:
+      - application
+      - metadata_private
+    mem_limit: 512m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  postgres:
+    image: postgres:17.11-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
+    pull_policy: missing
+    container_name: kindling-metadata-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rreading_glasses
+      POSTGRES_USER: rreading_glasses
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - metadata_private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rreading_glasses -d rreading_glasses"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    shm_size: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+
+networks:
+  application:
+  metadata_private:
+    internal: true
