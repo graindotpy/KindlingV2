@@ -267,6 +267,17 @@ function asCatalogueTimeout(error: unknown) {
     : error;
 }
 
+function libraryNotice(label: string) {
+  return `${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`;
+}
+
+// Diagnostics about how a result was found (fallbacks, skipped rows) only matter
+// when nothing was found. Once there are results, keep only the library notice,
+// because that one says the list itself may be incomplete.
+function warningsForResults(warnings: string[], hasResults: boolean, label: string) {
+  return hasResults ? warnings.filter((warning) => warning === libraryNotice(label)) : warnings;
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -457,7 +468,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
         if (localBooks.length > 0) {
           source = books.length ? "mixed" : "library";
           books.push(...localBooks);
-          warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
+          warnings.push(libraryNotice(label));
         }
       } catch {
         // Keep the metadata error when both lookup and local fallback failed.
@@ -473,7 +484,11 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       const existing = uniqueBooks.get(book.foreignBookId);
       if (!existing || (!existing.id && book.id)) uniqueBooks.set(book.foreignBookId, book);
     }
-    return { books: rankSearchBooks([...uniqueBooks.values()], term).slice(0, MAX_SEARCH_RESULTS), warnings, source };
+    return {
+      books: rankSearchBooks([...uniqueBooks.values()], term).slice(0, MAX_SEARCH_RESULTS),
+      warnings: warningsForResults(warnings, uniqueBooks.size > 0, label),
+      source,
+    };
   }
 
   async function searchOriginalQueryForResolvedBook(
@@ -611,7 +626,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       if (localBooks.length > 0) {
         books.push(...localBooks);
         source = "library";
-        warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
+        warnings.push(libraryNotice(label));
       }
       if (fallback.books.length > 0) {
         books.push(...fallback.books);
@@ -634,7 +649,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
         if (localBooks.length > 0) {
           source = books.length ? "mixed" : "library";
           books.push(...localBooks);
-          warnings.push(`${label} search is showing matches from your Readarr library. New books may be missing while its book catalogue is unavailable or incomplete.`);
+          warnings.push(libraryNotice(label));
         }
       } catch {
         // Keep the metadata error when both lookup and local fallback failed.
@@ -654,10 +669,11 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       if (!existing || (!existing.id && book.id)) uniqueBooks.set(book.foreignBookId, book);
     }
 
+    const rankedBooks = filterAndRankBooksByTitle([...uniqueBooks.values()], titleContext)
+      .slice(0, MAX_SEARCH_RESULTS);
     return {
-      books: filterAndRankBooksByTitle([...uniqueBooks.values()], titleContext)
-        .slice(0, MAX_SEARCH_RESULTS),
-      warnings,
+      books: rankedBooks,
+      warnings: warningsForResults(warnings, rankedBooks.length > 0, label),
       source,
     };
   }
