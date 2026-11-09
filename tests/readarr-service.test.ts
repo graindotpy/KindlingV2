@@ -180,6 +180,26 @@ describe("Readarr search reliability", () => {
     await assertion;
   });
 
+  it("points a timed-out search at Readarr's metadata provider", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      })));
+    const plain = createReadarrService().searchBooks("Gardens of the Moon");
+    const resolved = createReadarrService().searchBooksByAuthorWithDiagnostics({
+      authorForeignId: "31232",
+      targetTitle: "Gardens of the Moon",
+      fallbackQuery: "gardens of the moon",
+    });
+    const assertions = [
+      expect(plain).rejects.toThrow("metadata provider is probably slow or down"),
+      expect(resolved).rejects.toThrow("metadata provider is probably slow or down"),
+    ];
+    await vi.runAllTimersAsync();
+    await Promise.all(assertions);
+  });
+
   it("keeps upstream HTML, API keys, and stack traces out of user-facing errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("<html>test-api-key stack trace</html>", { status: 401 })));
     await expect(createReadarrService().searchBooks("Borrowers")).rejects.toThrow("Readarr rejected the API key");

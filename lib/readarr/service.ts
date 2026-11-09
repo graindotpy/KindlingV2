@@ -256,6 +256,17 @@ async function mapWithConcurrency<T, R>(values: T[], callback: (value: T) => Pro
   return results;
 }
 
+// Readarr answers searches only after its metadata provider does, so a search
+// timeout almost always means that provider is slow or down, not Readarr itself.
+function asCatalogueTimeout(error: unknown) {
+  return error instanceof ReadarrApiError && error.status === 504
+    ? new ReadarrApiError(
+      "Readarr took too long to search its book catalogue. Its metadata provider is probably slow or down; check Metadata Provider Source on Readarr's /settings/development page.",
+      504,
+    )
+    : error;
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -452,7 +463,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
         // Keep the metadata error when both lookup and local fallback failed.
       }
     }
-    if (books.length === 0 && remoteError) throw remoteError;
+    if (books.length === 0 && remoteError) throw asCatalogueTimeout(remoteError);
     if (books.length === 0) {
       // Upstream Readarr sometimes converts Goodreads/metadata errors to a successful empty list.
       warnings.push(`${label} Readarr returned no matches. Try a title, author, ISBN, or Goodreads book link; if searches keep returning nothing, check Readarr's metadata provider.`);
@@ -630,7 +641,7 @@ export function createReadarrService(format: BookRequestFormat = "ebook") {
       }
     }
 
-    if (books.length === 0 && remoteError) throw remoteError;
+    if (books.length === 0 && remoteError) throw asCatalogueTimeout(remoteError);
     if (books.length === 0) {
       warnings.push(fallbackQuery
         ? `${label} Readarr returned no work matching both the selected title and author, including from its standard search.`

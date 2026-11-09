@@ -180,12 +180,28 @@ Stop Kindling first. Move its current database **and any matching `-wal` / `-shm
 
 If rolling back application code after a schema change, restore the database backup taken before that upgrade as well. To reuse the previous image with Compose, tag it as `kindling:local` and start with `docker compose up -d --no-build --force-recreate`.
 
+## Book metadata provider
+
+Readarr's original metadata service is gone, so each Readarr instance needs a replacement "Metadata Provider Source". The shared public instance (`https://api.bookinfo.pro`) can go down for long periods; when it does, every Readarr search waits about 20 seconds and returns nothing, and Kindling reports that Readarr's book catalogue took too long.
+
+`deploy/metadata` runs our own copy of [rreading-glasses](https://github.com/blampe/rreading-glasses) in Goodreads mode on the Zima, shared by both Readarr instances. Goodreads mode keeps the IDs that existing Readarr libraries and Kindling's author searches use, so no library rebuild is needed.
+
+1. Copy `deploy/metadata` to the Zima and run `sudo bash deploy-zimaos.sh` from that folder. It installs to `/DATA/AppData/kindling-metadata`, generates the Postgres password, starts the stack and waits for the provider on port 8788 (`METADATA_PORT=<port>` changes it).
+2. Point each Readarr at it. The helper prints the previous value so you can switch back the same way:
+
+   ```bash
+   bash set-readarr-metadata-source.sh http://192.168.4.148:8787 /DATA/AppData/readarr/config/config.xml http://192.168.4.148:8788
+   bash set-readarr-metadata-source.sh http://192.168.4.148:8888 /DATA/AppData/readarr-audio/config/config.xml http://192.168.4.148:8788
+   ```
+
+The first search for an author can return an incomplete list of works while the provider loads them in the background; searching again a minute later fills it in. To roll back, run the helper with the old source URL. The Hardcover pilot in `deploy/hardcover-pilot` is a separate experiment and needs fresh Readarr databases.
+
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
 | Search reports Readarr unavailable | Check the correct LAN IP, port, API key and URL base for the selected format. Open that Readarr instance from another device on the same network. |
-| Readarr lookup fails despite a reachable instance | Readarr's metadata provider can fail independently of its web interface. Check the instance's own lookup and logs. Kindling reports that failure and keeps saved requests. |
+| Readarr lookup fails despite a reachable instance | Readarr's metadata provider can fail independently of its web interface. Time it directly, for example `curl -w '%{http_code} %{time_total}\n' -o /dev/null <metadata source>/author/31232`; a 5xx or a ~20 second wait means the provider is down (see [Book metadata provider](#book-metadata-provider)). Kindling reports that failure and keeps saved requests. |
 | A resolved search stalls in Readarr | Check the Readarr logs for `BookInfoProxy` and HTTP 429 backoffs. Kindling bounds the author lookup and makes one final standard search with the original query; it does not retry `/book/lookup` after that final attempt. |
 | Some books appear but an expected title is missing | Choose the matching Open Library title and author when prompted. Kindling then filters Readarr's author catalogue; Readarr still needs that work in its metadata results. |
 | Open Library warning appears | Kindling retries one temporary network/provider failure before falling back to Readarr. Check internet access from the container and run `docker logs --tail=100 kindling` for a sanitized reason such as `timeout`, `econnreset` or `http-429`; existing direct identifiers still work. |
