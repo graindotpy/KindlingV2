@@ -152,11 +152,12 @@ function buildUrl(
   return url;
 }
 
-async function readarrFetch<T>(
+export async function readarrFetch<T>(
   format: BookRequestFormat,
   pathname: string,
   init?: RequestInit,
   query?: Record<string, QueryValue>,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const config = getReadarrConfig(format);
   const apiKey = config.apiKey;
@@ -166,7 +167,7 @@ async function readarrFetch<T>(
   }
 
   const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
   const signal = init?.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal;
   try {
     const response = await fetch(buildUrl(format, pathname, query), {

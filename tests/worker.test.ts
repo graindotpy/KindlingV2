@@ -4,6 +4,7 @@ const deps = vi.hoisted(() => ({
   retry: vi.fn(async () => {}),
   sync: vi.fn(async () => {}),
   delivery: vi.fn(async () => {}),
+  rescue: vi.fn(async () => []),
   heartbeat: vi.fn(),
   started: vi.fn(),
   stopped: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@/lib/db/client", () => ({ initializeDatabase: vi.fn() }));
 vi.mock("@/lib/requests/service", () => ({
   createRequestService: () => ({ runAutomaticSearchRetryCycle: deps.retry, syncActiveRequests: deps.sync }),
 }));
+vi.mock("@/lib/readarr/import-rescue", () => ({ runImportRescueCycle: deps.rescue }));
 vi.mock("@/lib/delivery/service", () => ({
   createDeliveryService: () => ({ runAutomaticWatchCycle: deps.delivery }),
 }));

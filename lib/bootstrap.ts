@@ -1,6 +1,7 @@
 import { getAppConfig } from "@/lib/config";
 import { initializeDatabase } from "@/lib/db/client";
 import { createDeliveryService } from "@/lib/delivery/service";
+import { runImportRescueCycle } from "@/lib/readarr/import-rescue";
 import { createRequestService } from "@/lib/requests/service";
 import {
   recordWorkerError,
@@ -69,6 +70,13 @@ export function startBackgroundWorker(onFatalError?: (error: unknown) => void) {
         await createRequestService().syncActiveRequests();
       } catch (error) {
         failures.push(error instanceof Error ? error.message : "Request status update failed.");
+      }
+
+      if (!state.started) return;
+      try {
+        await runImportRescueCycle();
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "Stuck import check failed.");
       }
 
       if (!state.started) return;
