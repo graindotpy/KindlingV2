@@ -137,3 +137,25 @@ describe("stuck import rescue across instances", () => {
     expect(audiobook.runManualImport).toHaveBeenCalledOnce();
   });
 });
+
+describe("Readarr import rescue client", () => {
+  it("copies files rather than moving them out of the download folder", async () => {
+    const { createReadarrImportRescueClient } = await import("@/lib/readarr/import-rescue");
+    const { resetAppConfigCache } = await import("@/lib/config");
+    vi.stubEnv("AUDIOBOOK_READARR_BASE_URL", "http://localhost:8888");
+    vi.stubEnv("AUDIOBOOK_READARR_API_KEY", "test-api-key");
+    resetAppConfigCache();
+    const fetchMock = vi.fn<(input: string | URL, init?: RequestInit) => Promise<Response>>(async () =>
+      new Response(JSON.stringify({ id: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await createReadarrImportRescueClient("audiobook").runManualImport([]);
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({ name: "ManualImport", importMode: "copy" });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+      resetAppConfigCache();
+    }
+  });
+});

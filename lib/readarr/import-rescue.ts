@@ -133,7 +133,10 @@ export function createReadarrImportRescueClient(format: BookRequestFormat): Impo
     async runManualImport(files) {
       await readarrFetch(format, "/api/v1/command", {
         method: "POST",
-        body: JSON.stringify({ name: "ManualImport", importMode: "auto", files }),
+        // Copy rather than move: "auto" moves Usenet downloads, so an import that
+        // only partly succeeds could leave the remaining files nowhere. With
+        // "Remove Completed" on, Readarr still cleans up the download afterwards.
+        body: JSON.stringify({ name: "ManualImport", importMode: "copy", files }),
       });
     },
   };
