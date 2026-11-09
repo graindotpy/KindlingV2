@@ -123,3 +123,17 @@ describe("stuck import rescue", () => {
     expect(state.size).toBe(0);
   });
 });
+
+describe("stuck import rescue across instances", () => {
+  it("still checks the audiobook Readarr when the ebook one is down", async () => {
+    const ebook = fakeClient({ getQueue: vi.fn(async () => { throw new Error("Readarr is offline"); }) });
+    const audiobook = fakeClient();
+    const state: ImportRescueState = new Map();
+    const run = (at: number) =>
+      runImportRescueCycle({ clients: { ebook, audiobook }, state, now: () => at, log: () => {} });
+
+    await expect(run(0)).rejects.toThrow(/ebook: Readarr is offline/);
+    await expect(run(31 * MINUTE)).rejects.toThrow(/ebook/);
+    expect(audiobook.runManualImport).toHaveBeenCalledOnce();
+  });
+});

@@ -193,11 +193,21 @@ export async function runImportRescueCycle(options: {
   const log = options.log ?? ((message: string) => console.warn(`[kindling worker] ${message}`));
   const outcomes: ImportRescueOutcome[] = [];
   const seen = new Set<string>();
+  const scannedFormats = new Set<BookRequestFormat>();
+  const failures: string[] = [];
   let importsThisCycle = 0;
 
   for (const [format, client] of Object.entries(clients) as Array<[BookRequestFormat, ImportRescueClient | undefined]>) {
     if (!client?.isConfigured()) continue;
-    const queue = await client.getQueue();
+    let queue: ReadarrQueueRecord[];
+    try {
+      queue = await client.getQueue();
+    } catch (error) {
+      // One Readarr being down must not stop the other instance's rescue.
+      failures.push(`${format}: ${error instanceof Error ? error.message : "could not read the Readarr queue"}`);
+      continue;
+    }
+    scannedFormats.add(format);
 
     for (const item of queue) {
       if (!isStuckImport(item)) continue;
@@ -220,59 +230,68 @@ export async function runImportRescueCycle(options: {
         outcomes.push({ kind: "needs-attention", format, title, reason });
       };
 
-      const resolved = await resolveGrabbedBookId(client, item);
-      if (resolved.bookId === null) {
-        flag(resolved.reason!);
-        continue;
+      try {
+        const resolved = await resolveGrabbedBookId(client, item);
+        if (resolved.bookId === null) {
+          flag(resolved.reason!);
+          continue;
+        }
+
+        const book = await client.getBook(resolved.bookId);
+        const authorId = book.authorId ?? book.author?.id;
+        if (!authorId) {
+          flag("Readarr did not say which author the grabbed book belongs to.");
+          continue;
+        }
+        if ((book.statistics?.bookFileCount ?? 0) > 0) {
+          flag(`"${book.title}" already has files in the library, so this looks like a second copy.`);
+          continue;
+        }
+
+        tracked.attempts += 1;
+        tracked.lastAttemptAt = now();
+        importsThisCycle += 1;
+
+        const [candidates, editions] = await Promise.all([
+          client.getManualImportItems({ downloadId: item.downloadId!, authorId }),
+          client.getEditions(resolved.bookId),
+        ]);
+        const foreignEditionId = pickForeignEditionId(book, editions);
+        const files = candidates
+          .filter((candidate) => candidate.path && !candidate.additionalFile && hasFormatExtension(candidate.path, format))
+          .map((candidate): ReadarrManualImportFile => ({
+            path: candidate.path!,
+            authorId,
+            bookId: resolved.bookId!,
+            foreignEditionId: foreignEditionId ?? candidate.foreignEditionId ?? null,
+            quality: candidate.quality,
+            indexerFlags: candidate.indexerFlags ?? 0,
+            downloadId: item.downloadId!,
+            disableReleaseSwitching: false,
+          }));
+
+        if (files.length === 0) {
+          flag(`Readarr found no ${format} files to import in ${item.outputPath}.`);
+          continue;
+        }
+
+        await client.runManualImport(files);
+        tracked.flagged = null;
+        log(`Asked Readarr to import ${files.length} file(s) from "${title}" into "${book.title}" (${format}).`);
+        outcomes.push({ kind: "imported", format, title, bookId: resolved.bookId, files: files.length });
+      } catch (error) {
+        failures.push(`${format} "${title}": ${error instanceof Error ? error.message : "import check failed"}`);
       }
-
-      const book = await client.getBook(resolved.bookId);
-      const authorId = book.authorId ?? book.author?.id;
-      if (!authorId) {
-        flag("Readarr did not say which author the grabbed book belongs to.");
-        continue;
-      }
-      if ((book.statistics?.bookFileCount ?? 0) > 0) {
-        flag(`"${book.title}" already has files in the library, so this looks like a second copy.`);
-        continue;
-      }
-
-      tracked.attempts += 1;
-      tracked.lastAttemptAt = now();
-      importsThisCycle += 1;
-
-      const [candidates, editions] = await Promise.all([
-        client.getManualImportItems({ downloadId: item.downloadId!, authorId }),
-        client.getEditions(resolved.bookId),
-      ]);
-      const foreignEditionId = pickForeignEditionId(book, editions);
-      const files = candidates
-        .filter((candidate) => candidate.path && !candidate.additionalFile && hasFormatExtension(candidate.path, format))
-        .map((candidate): ReadarrManualImportFile => ({
-          path: candidate.path!,
-          authorId,
-          bookId: resolved.bookId!,
-          foreignEditionId: foreignEditionId ?? candidate.foreignEditionId ?? null,
-          quality: candidate.quality,
-          indexerFlags: candidate.indexerFlags ?? 0,
-          downloadId: item.downloadId!,
-          disableReleaseSwitching: false,
-        }));
-
-      if (files.length === 0) {
-        flag(`Readarr found no ${format} files to import in ${item.outputPath}.`);
-        continue;
-      }
-
-      await client.runManualImport(files);
-      tracked.flagged = null;
-      log(`Asked Readarr to import ${files.length} file(s) from "${title}" into "${book.title}" (${format}).`);
-      outcomes.push({ kind: "imported", format, title, bookId: resolved.bookId, files: files.length });
     }
   }
 
   for (const key of state.keys()) {
-    if (!seen.has(key)) state.delete(key);
+    const format = key.slice(0, key.indexOf(":")) as BookRequestFormat;
+    if (scannedFormats.has(format) && !seen.has(key)) state.delete(key);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`Stuck import check failed for ${failures.join("; ")}`);
   }
 
   return outcomes;
